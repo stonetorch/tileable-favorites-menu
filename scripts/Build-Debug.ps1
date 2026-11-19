@@ -66,19 +66,9 @@ function Publish-DebugDll {
         throw "目标模组的 SWF 与仓库版本不同：$installedSwf"
     }
     $expected = (Get-FileHash -LiteralPath $Source).Hash
-    $original = (Get-FileHash -LiteralPath $destination).Hash
-    if ($original -eq $expected) {
+    if ((Get-FileHash -LiteralPath $destination).Hash -eq $expected) {
         Write-Output "目标 DLL 已是本次构建：$destination"
         return
-    }
-
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-    $backupDir = Join-Path $projectRoot "build/deployment-backups/Debug-$stamp"
-    New-Item -ItemType Directory -Path $backupDir | Out-Null
-    $backup = Join-Path $backupDir 'TileableFavoritesMenu.dll'
-    Copy-Item -LiteralPath $destination -Destination $backup
-    if ((Get-FileHash -LiteralPath $backup).Hash -ne $original) {
-        throw "部署前备份校验失败：$backup"
     }
 
     $pending = Join-Path (Split-Path -Parent $destination) ("TileableFavoritesMenu-" + [Guid]::NewGuid().ToString('N') + '.tmp')
@@ -87,18 +77,13 @@ function Publish-DebugDll {
         if ((Get-FileHash -LiteralPath $pending).Hash -ne $expected) { throw '暂存 DLL 校验失败。' }
         Assert-GameClosed
         [IO.File]::Replace($pending, $destination, [NullString]::Value)
-        if ((Get-FileHash -LiteralPath $destination).Hash -ne $expected) {
-            Copy-Item -LiteralPath $backup -Destination $pending
-            [IO.File]::Replace($pending, $destination, [NullString]::Value)
-            throw "部署后校验失败，已还原 DLL：$backup"
-        }
+        if ((Get-FileHash -LiteralPath $destination).Hash -ne $expected) { throw "部署后校验失败：$destination" }
     } finally {
         if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending }
     }
 
     Write-Output "Debug DLL 已部署：$destination"
     Write-Output "SHA-256：$expected"
-    Write-Output "旧 DLL 备份：$backup"
 }
 
 Push-Location -LiteralPath $projectRoot
