@@ -2,7 +2,7 @@
 
 > 版本：v1.0 · 日期：2026-11-19  
 > 目标项目：[rainymidnight/tileable-favorites-menu](https://github.com/rainymidnight/tileable-favorites-menu)  
-> 工作方式：先由用户 Fork 上游仓库，再使用本交付包的 `setup.ps1` 从用户提供的 Fork URL 初始化、构建并验证基线。  
+> 工作方式：从用户的 Fork 检出项目，优先使用仓库提供的 `scripts/Build-Debug.ps1` 验证本机基线。Release 构建使用仓库的 CMake 预设。
 > **约束：本文仅规定功能、操作语义、边界条件和验收标准，不规定类、字段、序列化格式、表结构或具体数据结构。执行者必须检查源码并自行选择实现方案。**
 
 ## 0. 目标与边界

@@ -33,6 +33,6 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         return false;
     }
 
-    logger::info("Tileable Favorites Menu 1.0.6 loaded");
+    logger::info("Tileable Favorites Menu Extended 1.1.0 loaded");
     return true;
 }

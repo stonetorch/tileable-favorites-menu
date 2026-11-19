@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(TileableFavoritesMenu VERSION 1.0.6.0 LANGUAGES CXX)
+project(TileableFavoritesMenu VERSION 1.1.0.0 LANGUAGES CXX)
 
 set(OUTPUT_FOLDER "" CACHE PATH "Optional Skyrim Data folder or mod-manager mod root")
 
@@ -45,6 +45,8 @@ add_commonlibsse_plugin(${PROJECT_NAME} SOURCES
     src/Config.cpp
     src/Favorites.cpp
     src/IconLayer.cpp
+    src/Grid.cpp
+    src/GridEditor.cpp
     src/Layout.cpp
     src/PreviewCache.cpp
     src/Serialization.cpp
@@ -66,15 +68,33 @@ endif()
 if(OUTPUT_FOLDER)
     set(DLL_FOLDER "${OUTPUT_FOLDER}/SKSE/Plugins")
     set(LICENSE_FOLDER "${OUTPUT_FOLDER}/licenses/TileableFavoritesMenu")
-    add_custom_command(
-        TARGET ${PROJECT_NAME}
-        POST_BUILD
+    set(TFME_LICENSE_COMMANDS)
+    macro(tfme_copy_license source filename)
+        if(EXISTS "${source}")
+            list(APPEND TFME_LICENSE_COMMANDS
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${source}" "${LICENSE_FOLDER}/${filename}")
+        endif()
+    endmacro()
+    tfme_copy_license("${COMMONLIB_SRC_DIR}/COPYING" "CommonLibSSE-COPYING.txt")
+    tfme_copy_license("${COMMONLIB_SRC_DIR}/extern/openvr/LICENSE" "OpenVR-LICENSE.txt")
+    if(FETCHCONTENT_SOURCE_DIR_HDE64)
+        tfme_copy_license("${FETCHCONTENT_SOURCE_DIR_HDE64}/LICENSE.txt" "MinHook-LICENSE.txt")
+    else()
+        tfme_copy_license("${FETCHCONTENT_BASE_DIR}/hde64-src/LICENSE.txt" "MinHook-LICENSE.txt")
+    endif()
+    foreach(port IN ITEMS directxmath directxtk fmt nlohmann-json rapidcsv spdlog)
+        tfme_copy_license("${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${port}/copyright" "${port}-copyright.txt")
+    endforeach()
+
+    add_custom_target(TFMEPackage ALL
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${DLL_FOLDER}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${LICENSE_FOLDER}"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${PROJECT_NAME}>" "${DLL_FOLDER}/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
         COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/package" "${OUTPUT_FOLDER}"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${LICENSE_FOLDER}/TileableFavoritesMenu-MIT.txt"
         COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/external/licenses" "${LICENSE_FOLDER}"
+        ${TFME_LICENSE_COMMANDS}
+        DEPENDS TileableFavoritesMenu
         VERBATIM
     )
 endif()

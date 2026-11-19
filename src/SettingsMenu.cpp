@@ -115,25 +115,7 @@ namespace TFM::SettingsMenu
                 Config::SetTextSize(static_cast<std::uint32_t>(textSize));
             }
 
-            auto outerMargin = Config::Get().outerMargin;
-            if (ImGuiMCP::SliderFloat(
-                    "Menu margin",
-                    std::addressof(outerMargin),
-                    Config::kOuterMarginMin,
-                    Config::kOuterMarginMax,
-                    "%.0f px")) {
-                Config::SetOuterMargin(outerMargin);
-            }
-
-            auto gap = Config::Get().gap;
-            if (ImGuiMCP::SliderFloat(
-                    "Tile gap",
-                    std::addressof(gap),
-                    Config::kGapMin,
-                    Config::kGapMax,
-                    "%.0f px")) {
-                Config::SetGap(gap);
-            }
+            ImGuiMCP::TextWrapped("Grid, spacing, and window controls are in Favorites > Edit.");
 
             auto backdropPercent = Config::Get().backdropAlpha * 100.0f;
             if (ImGuiMCP::SliderFloat(

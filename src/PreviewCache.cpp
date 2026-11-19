@@ -563,6 +563,9 @@ namespace TFM
     public:
         void SetVisible(bool visible)
         {
+            if (visible_ == visible) {
+                return;
+            }
             visible_ = visible;
             if (entry_) {
                 entry_->SetVisible(visible);
@@ -630,7 +633,14 @@ namespace TFM
 
     bool PreviewCache::Update(const std::vector<FavoriteItem>& items)
     {
-        return UpdateItems(items, std::numeric_limits<std::size_t>::max());
+        std::unordered_set<RE::FormID> visibleForms;
+        for (const auto& item : items) {
+            visibleForms.insert(item.key.formID);
+        }
+        for (const auto& [form, preview] : previews_) {
+            preview->SetVisible(visible_ && visibleForms.contains(form));
+        }
+        return UpdateItems(items, kPrewarmNewEntriesPerFrame);
     }
 
     bool PreviewCache::Prewarm(const std::vector<FavoriteItem>& items)

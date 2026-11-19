@@ -1,4 +1,6 @@
 #include "Layout.h"
+#include "Config.h"
+#include <nlohmann/json.hpp>
 
 namespace TFM
 {
@@ -16,81 +18,6 @@ namespace TFM
         bool ReadValue(SKSE::SerializationInterface* serialization, T& value)
         {
             return serialization->ReadRecordData(std::addressof(value), sizeof(value)) == sizeof(value);
-        }
-
-        void CollectKeys(const LayoutNode* node, std::unordered_set<ItemKey, ItemKeyHash>& keys)
-        {
-            if (!node) {
-                return;
-            }
-            if (node->IsLeaf()) {
-                if (node->item.IsValid()) {
-                    keys.insert(node->item);
-                }
-                return;
-            }
-            CollectKeys(node->first.get(), keys);
-            CollectKeys(node->second.get(), keys);
-        }
-
-        std::unique_ptr<LayoutNode> Prune(
-            std::unique_ptr<LayoutNode> node,
-            const std::unordered_set<ItemKey, ItemKeyHash>& valid)
-        {
-            if (!node) {
-                return nullptr;
-            }
-            if (node->IsLeaf()) {
-                return valid.contains(node->item) ? std::move(node) : nullptr;
-            }
-
-            node->first = Prune(std::move(node->first), valid);
-            node->second = Prune(std::move(node->second), valid);
-            if (!node->first) {
-                return std::move(node->second);
-            }
-            if (!node->second) {
-                return std::move(node->first);
-            }
-            return node;
-        }
-
-        void FindShallowestLeaf(LayoutNode* node, std::size_t depth, LayoutNode*& best, std::size_t& bestDepth)
-        {
-            if (!node) {
-                return;
-            }
-            if (node->IsLeaf()) {
-                if (!best || depth < bestDepth) {
-                    best = node;
-                    bestDepth = depth;
-                }
-                return;
-            }
-            FindShallowestLeaf(node->first.get(), depth + 1, best, bestDepth);
-            FindShallowestLeaf(node->second.get(), depth + 1, best, bestDepth);
-        }
-
-        void InsertItem(std::unique_ptr<LayoutNode>& root, const ItemKey& item)
-        {
-            if (!root) {
-                root = std::make_unique<LayoutNode>();
-                root->item = item;
-                return;
-            }
-
-            LayoutNode* leaf = nullptr;
-            std::size_t bestDepth = 0;
-            FindShallowestLeaf(root.get(), 0, leaf, bestDepth);
-
-            auto oldItem = leaf->item;
-            leaf->item = {};
-            leaf->axis = bestDepth % 2 == 0 ? Axis::kVertical : Axis::kHorizontal;
-            leaf->ratio = 0.5f;
-            leaf->first = std::make_unique<LayoutNode>();
-            leaf->first->item = oldItem;
-            leaf->second = std::make_unique<LayoutNode>();
-            leaf->second->item = item;
         }
 
         void CalculateNode(
@@ -122,128 +49,6 @@ namespace TFM
                 CalculateNode(node->first.get(), first, gap, leaves);
                 CalculateNode(node->second.get(), second, gap, leaves);
             }
-        }
-
-        LayoutNode* FindLeaf(LayoutNode* node, const ItemKey& key)
-        {
-            if (!node) {
-                return nullptr;
-            }
-            if (node->IsLeaf()) {
-                return node->item == key ? node : nullptr;
-            }
-            if (auto result = FindLeaf(node->first.get(), key)) {
-                return result;
-            }
-            return FindLeaf(node->second.get(), key);
-        }
-
-        std::unique_ptr<LayoutNode> CloneNode(const LayoutNode* node)
-        {
-            if (!node) {
-                return nullptr;
-            }
-            auto clone = std::make_unique<LayoutNode>();
-            clone->item = node->item;
-            clone->axis = node->axis;
-            clone->ratio = node->ratio;
-            clone->first = CloneNode(node->first.get());
-            clone->second = CloneNode(node->second.get());
-            return clone;
-        }
-
-        std::unique_ptr<LayoutNode>* FindLeafSlot(
-            std::unique_ptr<LayoutNode>& node,
-            const ItemKey& key)
-        {
-            if (!node) {
-                return nullptr;
-            }
-            if (node->IsLeaf()) {
-                return node->item == key ? std::addressof(node) : nullptr;
-            }
-            if (auto slot = FindLeafSlot(node->first, key)) {
-                return slot;
-            }
-            return FindLeafSlot(node->second, key);
-        }
-
-        bool ExtractLeaf(
-            std::unique_ptr<LayoutNode>& node,
-            const ItemKey& key,
-            std::unique_ptr<LayoutNode>& extracted)
-        {
-            if (!node) {
-                return false;
-            }
-            if (node->IsLeaf()) {
-                if (node->item != key) {
-                    return false;
-                }
-                extracted = std::move(node);
-                return true;
-            }
-
-            if (!ExtractLeaf(node->first, key, extracted) &&
-                !ExtractLeaf(node->second, key, extracted)) {
-                return false;
-            }
-            if (!node->first) {
-                node = std::move(node->second);
-            } else if (!node->second) {
-                node = std::move(node->first);
-            }
-            return true;
-        }
-
-        [[nodiscard]] std::size_t TreeDepth(const LayoutNode* node)
-        {
-            if (!node || node->IsLeaf()) {
-                return 0;
-            }
-            return 1 + std::max(TreeDepth(node->first.get()), TreeDepth(node->second.get()));
-        }
-
-        bool ApplyDropToTree(std::unique_ptr<LayoutNode>& root, const LayoutDrop& drop)
-        {
-            if (!drop.source.IsValid() || !drop.target.IsValid() || drop.source == drop.target) {
-                return false;
-            }
-
-            if (drop.position == DropPosition::kCenter) {
-                const auto source = FindLeaf(root.get(), drop.source);
-                const auto target = FindLeaf(root.get(), drop.target);
-                if (!source || !target) {
-                    return false;
-                }
-                std::swap(source->item, target->item);
-                return true;
-            }
-
-            if (!FindLeaf(root.get(), drop.source) || !FindLeaf(root.get(), drop.target)) {
-                return false;
-            }
-
-            std::unique_ptr<LayoutNode> source;
-            if (!ExtractLeaf(root, drop.source, source)) {
-                return false;
-            }
-            const auto targetSlot = FindLeafSlot(root, drop.target);
-            if (!targetSlot) {
-                return false;
-            }
-
-            auto target = std::move(*targetSlot);
-            auto split = std::make_unique<LayoutNode>();
-            split->axis = drop.position == DropPosition::kLeft || drop.position == DropPosition::kRight ?
-                Axis::kVertical : Axis::kHorizontal;
-            split->ratio = 0.5f;
-            const bool sourceFirst =
-                drop.position == DropPosition::kLeft || drop.position == DropPosition::kTop;
-            split->first = sourceFirst ? std::move(source) : std::move(target);
-            split->second = sourceFirst ? std::move(target) : std::move(source);
-            *targetSlot = std::move(split);
-            return TreeDepth(root.get()) <= kMaximumDepth;
         }
 
         bool WriteNode(SKSE::SerializationInterface* serialization, const LayoutNode* node)
@@ -298,13 +103,166 @@ namespace TFM
                 return nullptr;
             }
             node->axis = static_cast<Axis>(axis);
-            node->ratio = std::clamp(node->ratio, 0.1f, 0.9f);
+            node->ratio = std::isfinite(node->ratio) ? std::clamp(node->ratio, 0.1f, 0.9f) : 0.5f;
             node->first = ReadNode(serialization, depth + 1, ok);
             node->second = ReadNode(serialization, depth + 1, ok);
             if (!ok) {
                 return nullptr;
             }
             return node;
+        }
+    }
+
+    namespace
+    {
+        using Json = nlohmann::json;
+
+        Category Classify(const FavoriteItem& item)
+        {
+            switch (item.form->GetFormType()) {
+            case RE::FormType::Weapon:
+            case RE::FormType::Armor:
+            case RE::FormType::Ammo: return Category::equipment;
+            case RE::FormType::AlchemyItem:
+                if (const auto* alchemy = item.form->As<RE::AlchemyItem>()) {
+                    if (alchemy->IsPoison()) {
+                        return Category::poison;
+                    }
+                    if (!alchemy->IsFood()) {
+                        return Category::potion;
+                    }
+                }
+                return Category::miscellaneous;
+            case RE::FormType::Spell: return Category::spell;
+            case RE::FormType::Scroll: return Category::scroll;
+            case RE::FormType::Shout: return Category::shout;
+            default: return Category::miscellaneous;
+            }
+        }
+
+        bool WriteGrid(SKSE::SerializationInterface* serialization, const Grid& grid)
+        {
+            const auto& s = grid.settings;
+            Json groups = Json::array();
+            for (const auto& group : grid.groups) {
+                Json pages = Json::array();
+                for (const auto& page : group.pages) {
+                    pages.push_back({static_cast<int>(page.sort), page.edited, page.automatic});
+                }
+                groups.push_back({group.name, group.icon, group.accepts, std::move(pages)});
+            }
+
+            Json tiles = Json::array();
+            for (const auto& tile : grid.tiles) {
+                const auto& c = tile.cells;
+                const auto& loc = tile.location;
+                tiles.push_back({tile.form, tile.instance, c.x, c.y, c.w, c.h, tile.wantedWidth, tile.wantedHeight,
+                    loc.group, loc.page, loc.global, tile.pinned});
+            }
+            const auto data = Json{
+                {"grid", {s.columns, s.rows, s.x, s.y, s.width, s.height, s.cellSize, s.gap, s.margin, s.fit, s.wrap,
+                    static_cast<int>(s.navigation), s.navX, s.navY}},
+                {"mask", grid.mask}, {"groups", std::move(groups)}, {"tiles", std::move(tiles)}
+            }.dump(-1, ' ', false, Json::error_handler_t::replace);
+            return serialization->WriteRecordData(data.data(), static_cast<std::uint32_t>(data.size()));
+        }
+
+        int ReadInt(const Json& array, unsigned index, int minimum, int maximum)
+        {
+            const auto& value = array.at(index);
+            if (!value.is_number_integer()) {
+                throw std::invalid_argument("Expected an integer");
+            }
+            const auto number = value.get<std::int64_t>();
+            if (number < minimum || number > maximum) {
+                throw std::out_of_range("Grid field is outside its supported range");
+            }
+            return static_cast<int>(number);
+        }
+
+        Grid ReadGrid(SKSE::SerializationInterface* serialization, const Json& record)
+        {
+            Grid grid;
+            auto& s = grid.settings;
+            const auto& g = record.at("grid");
+            s.columns = ReadInt(g, 0, 1, kGridLimit);
+            s.rows = ReadInt(g, 1, 1, kGridLimit);
+            s.x = ReadInt(g, 2, 0, 95);
+            s.y = ReadInt(g, 3, 0, 95);
+            s.width = ReadInt(g, 4, 5, 100);
+            s.height = ReadInt(g, 5, 5, 100);
+            s.cellSize = ReadInt(g, 6, 24, 320);
+            s.gap = ReadInt(g, 7, 0, 40);
+            s.margin = ReadInt(g, 8, 0, 40);
+            s.fit = g.at(9).get<bool>();
+            s.wrap = g.at(10).get<bool>();
+            s.navigation = static_cast<Navigation>(ReadInt(g, 11, 0, 4));
+            s.navX = ReadInt(g, 12, 0, 95);
+            s.navY = ReadInt(g, 13, 0, 95);
+            const auto& mask = record.at("mask");
+            if (mask.size() != static_cast<std::size_t>(s.columns * s.rows)) {
+                throw std::invalid_argument("Incorrect mask size");
+            }
+            grid.mask.clear();
+            for (unsigned i = 0; i < mask.size(); ++i) {
+                grid.mask.push_back(static_cast<std::uint8_t>(ReadInt(mask, i, 0, 1)));
+            }
+
+            const auto& groups = record.at("groups");
+            if (!groups.is_array() || groups.empty() || groups.size() > kGroupLimit) {
+                throw std::invalid_argument("Invalid category list");
+            }
+            unsigned totalPages = 0;
+            grid.groups.clear();
+            for (const auto& group : groups) {
+                CategoryGroup entry{group.at(0).get<std::string>(), group.at(1).get<std::string>()};
+                entry.accepts = group.at(2).get<decltype(entry.accepts)>();
+                const auto& pages = group.at(3);
+                if (!pages.is_array() || pages.empty() || pages.size() > kPageLimit - totalPages ||
+                    entry.name.empty() || entry.name.size() > 63 || entry.icon.size() > 15) {
+                    throw std::invalid_argument("Invalid category or page settings");
+                }
+                totalPages += static_cast<unsigned>(pages.size());
+                entry.pages.clear();
+                for (const auto& page : pages) {
+                    entry.pages.push_back({static_cast<Sort>(ReadInt(page, 0, 0, 3)),
+                        page.at(1).get<bool>(), page.at(2).get<bool>()});
+                }
+                grid.groups.push_back(std::move(entry));
+            }
+            grid.EnsureRoutes();
+
+            const auto& tiles = record.at("tiles");
+            if (!tiles.is_array() || tiles.size() > 65536) {
+                throw std::invalid_argument("Invalid tile list");
+            }
+            for (const auto& t : tiles) {
+                RE::FormID resolved{};
+                if (!serialization->ResolveFormID(t.at(0).get<RE::FormID>(), resolved) || !resolved) {
+                    continue;
+                }
+                grid.tiles.push_back({
+                    resolved, static_cast<std::uint16_t>(ReadInt(t, 1, 0, 65535)),
+                    {ReadInt(t, 2, -1, kGridLimit), ReadInt(t, 3, -1, kGridLimit),
+                        ReadInt(t, 4, 1, kGridLimit), ReadInt(t, 5, 1, kGridLimit)},
+                    ReadInt(t, 6, 1, kGridLimit), ReadInt(t, 7, 1, kGridLimit),
+                    {static_cast<unsigned>(ReadInt(t, 8, 0, kGroupLimit)),
+                        static_cast<unsigned>(ReadInt(t, 9, 0, kPageLimit - 1)), t.at(10).get<bool>()},
+                    t.at(11).get<bool>()
+                });
+            }
+            // Revalidate every rectangle against live favorites on the first refresh.
+            grid.needsValidation = true;
+            return grid;
+        }
+
+        void Remember(std::vector<Grid>& history, const Grid& grid)
+        {
+            constexpr std::size_t limit = 24;
+            if (history.size() >= limit) {
+                history.erase(history.begin());
+            }
+            history.push_back(grid);
         }
     }
 
@@ -317,85 +275,199 @@ namespace TFM
     void Layout::Reconcile(const std::vector<FavoriteItem>& favorites)
     {
         std::scoped_lock lock(mutex_);
-        std::unordered_set<ItemKey, ItemKeyHash> valid;
-        valid.reserve(favorites.size());
+        items_.clear();
+        items_.reserve(favorites.size());
         for (const auto& favorite : favorites) {
-            valid.insert(favorite.key);
-        }
-
-        root_ = Prune(std::move(root_), valid);
-        std::unordered_set<ItemKey, ItemKeyHash> existing;
-        CollectKeys(root_.get(), existing);
-        for (const auto& favorite : favorites) {
-            if (!existing.contains(favorite.key)) {
-                InsertItem(root_, favorite.key);
-                existing.insert(favorite.key);
+            if (favorite.key.IsValid() && favorite.form) {
+                items_.push_back({favorite.key.formID, favorite.key.uniqueID, Classify(favorite),
+                    favorite.name, favorite.form->IsInventoryObject() ? favorite.form->GetGoldValue() : 0});
             }
         }
+        if (!migrated_ && !items_.empty()) {
+            const auto& config = Config::Get();
+            if (std::isfinite(config.gap)) {
+                grid_.settings.gap = static_cast<int>(std::round(std::clamp(config.gap, 0.0f, 40.0f)));
+            }
+            if (std::isfinite(config.outerMargin)) {
+                grid_.settings.margin = static_cast<int>(std::round(std::clamp(config.outerMargin, 0.0f, 40.0f)));
+            }
+        }
+        if (!migrated_ && legacy_ && !items_.empty()) {
+            std::vector<LeafRect> legacyTiles;
+            const auto columns = static_cast<float>(grid_.settings.columns);
+            const auto rows = static_cast<float>(grid_.settings.rows);
+            CalculateNode(legacy_.get(), {0, 0, columns, rows}, 0, legacyTiles);
+            for (const auto& leaf : legacyTiles) {
+                const auto item = std::ranges::find_if(items_, [&](const auto& entry) { return entry.Key() == leaf.item; });
+                if (item == items_.end()) {
+                    continue;
+                }
+                const auto group = std::ranges::find_if(grid_.groups, [&](const auto& entry) {
+                    return entry.accepts[static_cast<unsigned>(item->category)];
+                });
+                const Cells cells{static_cast<int>(leaf.rect.x), static_cast<int>(leaf.rect.y),
+                    std::max(1, static_cast<int>(leaf.rect.width)), std::max(1, static_cast<int>(leaf.rect.height))};
+                grid_.tiles.push_back({item->form, item->instance, cells, cells.w, cells.h,
+                    {static_cast<unsigned>(group - grid_.groups.begin()), 0, false}, true});
+            }
+            grid_.Reflow(items_);
+            grid_.notice = "TFM layout imported. Original layout retained in the SKSE co-save.";
+            migrated_ = true;
+        } else {
+            grid_.Reconcile(items_);
+            migrated_ |= !items_.empty();
+        }
+    }
+
+    Grid Layout::Snapshot() const
+    {
+        std::scoped_lock lock(mutex_);
+        return grid_;
+    }
+
+    Grid Layout::Prepare(Grid grid, std::optional<Location> organize, bool wholeGroup) const
+    {
+        std::scoped_lock lock(mutex_);
+        grid.EnsureRoutes();
+        grid.Reflow(items_, organize, wholeGroup);
+        return grid;
+    }
+
+    void Layout::Commit(Grid grid)
+    {
+        std::scoped_lock lock(mutex_);
+        if (grid.missing) {
+            grid.Reflow(items_);
+        } else {
+            grid.Reconcile(items_);
+        }
+        Remember(undo_, grid_);
+        redo_.clear();
+        grid_ = std::move(grid);
+        migrated_ = true;
+    }
+
+    bool Layout::Undo()
+    {
+        std::scoped_lock lock(mutex_);
+        if (undo_.empty()) {
+            return false;
+        }
+        Remember(redo_, grid_);
+        grid_ = std::move(undo_.back());
+        undo_.pop_back();
+        grid_.Reconcile(items_);
+        return true;
+    }
+
+    bool Layout::Redo()
+    {
+        std::scoped_lock lock(mutex_);
+        if (redo_.empty()) {
+            return false;
+        }
+        Remember(undo_, grid_);
+        grid_ = std::move(redo_.back());
+        redo_.pop_back();
+        grid_.Reconcile(items_);
+        return true;
+    }
+
+    bool Layout::RestoreBackup()
+    {
+        std::scoped_lock lock(mutex_);
+        if (!backup_ && !previousSave_) {
+            return false;
+        }
+        Remember(undo_, grid_);
+        redo_.clear();
+        grid_ = backup_ ? *backup_ : *previousSave_;
+        grid_.needsValidation = true;
+        if (!items_.empty()) {
+            grid_.Reflow(items_);
+        }
+        migrated_ = true;
+        return true;
     }
 
     void Layout::Clear()
     {
         std::scoped_lock lock(mutex_);
-        root_.reset();
+        grid_ = Grid{};
+        items_.clear();
+        undo_.clear();
+        redo_.clear();
+        legacy_.reset();
+        previousSave_.reset();
+        backup_.reset();
+        migrated_ = false;
     }
 
-    std::vector<LeafRect> Layout::Calculate(const Rect& bounds, float gap)
+    bool Layout::Save(SKSE::SerializationInterface* serialization, std::uint32_t gridRecord,
+        std::uint32_t backupRecord, std::uint32_t legacyRecord, std::uint32_t version)
     {
         std::scoped_lock lock(mutex_);
-        std::vector<LeafRect> result;
-        CalculateNode(root_.get(), bounds, gap, result);
-        return result;
-    }
-
-    std::optional<std::vector<LeafRect>> Layout::CalculatePreview(
-        const Rect& bounds,
-        float gap,
-        const LayoutDrop& drop)
-    {
-        std::scoped_lock lock(mutex_);
-        auto preview = CloneNode(root_.get());
-        if (!ApplyDropToTree(preview, drop)) {
-            return std::nullopt;
+        const bool hasRoot = static_cast<bool>(legacy_);
+        const bool legacyWritten = serialization->OpenRecord(legacyRecord, version) &&
+            WriteValue(serialization, hasRoot) && (!hasRoot || WriteNode(serialization, legacy_.get()));
+        if (!migrated_) {
+            return legacyWritten;
         }
-        std::vector<LeafRect> result;
-        CalculateNode(preview.get(), bounds, gap, result);
-        return result;
-    }
 
-    bool Layout::ApplyDrop(const LayoutDrop& drop)
-    {
-        std::scoped_lock lock(mutex_);
-        auto updated = CloneNode(root_.get());
-        if (!ApplyDropToTree(updated, drop)) {
+        try {
+            const auto& recovery = previousSave_ ? *previousSave_ : grid_;
+            const bool backupWritten = serialization->OpenRecord(backupRecord, version) &&
+                WriteGrid(serialization, recovery);
+            if (backupWritten) {
+                backup_ = recovery;
+            }
+            const bool gridWritten = serialization->OpenRecord(gridRecord, version) && WriteGrid(serialization, grid_);
+            if (gridWritten) {
+                previousSave_ = grid_;
+            }
+            return legacyWritten && backupWritten && gridWritten;
+        } catch (const std::exception&) {
             return false;
         }
-        root_ = std::move(updated);
-        return true;
     }
 
-    bool Layout::Save(SKSE::SerializationInterface* serialization) const
+    bool Layout::Load(SKSE::SerializationInterface* serialization, std::uint32_t length, bool backup)
     {
-        std::scoped_lock lock(mutex_);
-        const bool hasRoot = root_ != nullptr;
-        return WriteValue(serialization, hasRoot) && (!hasRoot || WriteNode(serialization, root_.get()));
-    }
-
-    bool Layout::Load(SKSE::SerializationInterface* serialization)
-    {
-        bool hasRoot = false;
-        if (!ReadValue(serialization, hasRoot)) {
+        if (length == 0 || length > 16 * 1024 * 1024) {
             return false;
         }
+        try {
+            std::string data(length, '\0');
+            if (serialization->ReadRecordData(data.data(), length) != length) {
+                return false;
+            }
+            auto loaded = ReadGrid(serialization, Json::parse(data));
+            std::scoped_lock lock(mutex_);
+            if (backup) {
+                backup_ = std::move(loaded);
+            } else {
+                grid_ = std::move(loaded);
+                previousSave_ = grid_;
+                migrated_ = true;
+            }
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
 
+    bool Layout::LoadLegacy(SKSE::SerializationInterface* serialization)
+    {
+        std::uint8_t hasRoot{};
+        if (!ReadValue(serialization, hasRoot) || hasRoot > 1) {
+            return false;
+        }
         bool ok = true;
         auto loaded = hasRoot ? ReadNode(serialization, 0, ok) : nullptr;
-        if (!ok) {
-            return false;
+        if (ok) {
+            std::scoped_lock lock(mutex_);
+            legacy_ = std::move(loaded);
         }
-
-        std::scoped_lock lock(mutex_);
-        root_ = std::move(loaded);
-        return true;
+        return ok;
     }
 }

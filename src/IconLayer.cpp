@@ -65,6 +65,7 @@ namespace TFM::IconLayer
         {
             float screenWidth{ 0.0f };
             float screenHeight{ 0.0f };
+            Rect panel{};
             float backdropAlpha{ 0.18f };
             float tileAlpha{ 0.62f };
             bool useFrames{ false };
@@ -1155,11 +1156,10 @@ namespace TFM::IconLayer
                 }
                 background_.Invoke("clear");
                 const auto visible = uiMovie->GetVisibleFrameRect();
-                const Rect screen{ visible.left, visible.top, visible.right - visible.left, visible.bottom - visible.top };
                 DrawRoundRect(
                     background_,
-                    screen,
-                    0.0f,
+                    ToStageRect(layout.panel, layout, visible),
+                    Theme::kCornerRadius,
                     Theme::kBackdropColor,
                     std::clamp(layout.backdropAlpha, 0.0f, 1.0f) * 100.0f);
 
@@ -1613,6 +1613,7 @@ namespace TFM::IconLayer
     void SubmitLayout(
         float screenWidth,
         float screenHeight,
+        Rect panel,
         std::span<const Tile> tiles,
         std::optional<Rect> dragGhost,
         std::optional<ItemKey> dragGhostItem,
@@ -1626,6 +1627,7 @@ namespace TFM::IconLayer
         LayoutSnapshot next;
         next.screenWidth = screenWidth;
         next.screenHeight = screenHeight;
+        next.panel = panel;
         next.backdropAlpha = backdropAlpha;
         next.tileAlpha = tileAlpha;
         next.useFrames = useFrames;

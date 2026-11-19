@@ -17,39 +17,43 @@ namespace TFM::Serialization
         }
 
         constexpr auto kPluginID = FourCC('T', 'F', 'M', 'N');
-        constexpr auto kLayoutRecord = FourCC('L', 'A', 'Y', 'T');
+        constexpr auto kLegacy = FourCC('L', 'A', 'Y', 'T');
+        constexpr auto kGrid = FourCC('G', 'R', 'I', 'D');
+        constexpr auto kBackup = FourCC('G', 'B', 'A', 'K');
         constexpr std::uint32_t kVersion = 1;
 
         void Save(SKSE::SerializationInterface* serialization)
         {
-            if (!serialization->OpenRecord(kLayoutRecord, kVersion)) {
-                logger::error("Could not open layout serialization record");
-                return;
-            }
-            if (!Layout::GetSingleton().Save(serialization)) {
-                logger::error("Could not serialize tile layout");
+            if (!Layout::GetSingleton().Save(serialization, kGrid, kBackup, kLegacy, kVersion)) {
+                logger::error("Could not complete TFME layout serialization");
             }
         }
 
         void Load(SKSE::SerializationInterface* serialization)
         {
+            auto& layout = Layout::GetSingleton();
+            layout.Clear();
             std::uint32_t type = 0;
             std::uint32_t version = 0;
             std::uint32_t length = 0;
+            bool loaded = false;
+            bool backup = false;
             while (serialization->GetNextRecordInfo(type, version, length)) {
-                static_cast<void>(length);
-                if (type != kLayoutRecord) {
-                    logger::warn("Ignoring unknown serialization record {:08X}", type);
-                    continue;
-                }
                 if (version != kVersion) {
-                    logger::warn("Ignoring unsupported layout record version {}", version);
                     continue;
                 }
-                if (!Layout::GetSingleton().Load(serialization)) {
-                    logger::error("Saved tile layout is invalid; it will be rebuilt on next open");
-                    Layout::GetSingleton().Clear();
+                if (type == kLegacy) {
+                    if (!layout.LoadLegacy(serialization)) {
+                        logger::warn("Ignoring invalid legacy TFM layout");
+                    }
+                } else if (type == kGrid) {
+                    loaded = layout.Load(serialization, length, false) || loaded;
+                } else if (type == kBackup) {
+                    backup = layout.Load(serialization, length, true) || backup;
                 }
+            }
+            if (!loaded && backup) {
+                layout.RestoreBackup();
             }
         }
 

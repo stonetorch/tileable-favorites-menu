@@ -30,6 +30,7 @@ namespace TFM::IconLayer
     void SubmitLayout(
         float screenWidth,
         float screenHeight,
+        Rect panel,
         std::span<const Tile> tiles,
         std::optional<Rect> dragGhost,
         std::optional<ItemKey> dragGhostItem,

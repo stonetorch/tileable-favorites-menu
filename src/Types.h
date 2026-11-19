@@ -1,10 +1,20 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace RE
+{
+    class TESForm;
+    class TESBoundObject;
+}
+
 namespace TFM
 {
     struct ItemKey
     {
-        RE::FormID formID{ 0 };
+        std::uint32_t formID{ 0 };
         std::uint16_t uniqueID{ 0 };
 
         [[nodiscard]] bool IsValid() const noexcept { return formID != 0; }

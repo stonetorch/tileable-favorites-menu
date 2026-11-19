@@ -4,7 +4,7 @@
 #include "Config.h"
 #include "Favorites.h"
 #include "IconLayer.h"
-#include "Layout.h"
+#include "GridEditor.h"
 #include "PreviewCache.h"
 #include "SKSEMenuFramework.h"
 #include "Theme.h"
@@ -22,19 +22,32 @@ namespace TFM::UI
         std::unique_ptr<SKSEMenuFramework::Model::Event> frameworkEventRegistration;
         std::unique_ptr<SKSEMenuFramework::Model::HudElement> meshPrewarmRegistration;
         ItemKey focusedItem{};
+        GridEditor gridEditor;
+        std::atomic_int pendingPageTurn{};
+        std::atomic_bool pendingCancel{};
+        std::atomic_bool canCancelEdit{};
+        std::atomic_bool enteringText{};
         struct DragState
         {
             ItemKey source{};
             ItemKey target{};
             Rect sourceRect{};
-            Rect targetRect{};
-            DropPosition position{ DropPosition::kCenter };
             ImGui::ImVec2 pressPosition{};
             ImGui::ImVec2 grabOffset{};
             ImGui::ImVec2 pointerPosition{};
-            bool active{ false };
-            bool controller{ false };
-            bool dropRequested{ false };
+            std::optional<Placement> preview;
+            std::optional<Cells> region;
+            Cells startCell;
+            float held{};
+            float edgeHeld{};
+            int horizontal{}, vertical{};
+            bool blocked{};
+            bool frameSelection{};
+            bool resize{};
+            bool shrink{};
+            bool active{};
+            bool controller{};
+            bool dropRequested{};
         };
         DragState dragState{};
         struct PointerInputFrame
@@ -42,10 +55,11 @@ namespace TFM::UI
             bool leftPressed{ false };
             bool leftReleased{ false };
             bool rightPressed{ false };
+            bool rightReleased{ false };
+            bool rightDown{ false };
             bool leftDown{ false };
         };
         PointerInputFrame pointerInput{};
-        std::unordered_map<ItemKey, Rect, ItemKeyHash> animatedRects;
         bool favoritesButtonDown = false;
         bool registered = false;
         bool nativeBlurActive = false;
@@ -103,8 +117,6 @@ namespace TFM::UI
         constexpr float kControllerNavigationDeadzone = 0.5f;
         constexpr float kControllerNavigationInitialRepeatDelay = 0.3f;
         constexpr float kControllerNavigationRepeatInterval = 0.1f;
-        constexpr float kDropCenterInset = 0.18f;
-        constexpr float kLayoutAnimationSpeed = 18.0f;
         constexpr float kItemLabelHorizontalPadding = 12.0f;
         constexpr float kDefaultEquipIndicatorSize = 24.0f;
         constexpr float kDefaultHotkeyIndicatorSize = 26.0f;
@@ -195,99 +207,6 @@ namespace TFM::UI
                 point.y >= rect.y && point.y <= rect.Bottom();
         }
 
-        [[nodiscard]] DropPosition DropPositionFor(const Rect& rect, const ImGui::ImVec2& point)
-        {
-            const auto x = std::clamp((point.x - rect.x) / std::max(1.0f, rect.width), 0.0f, 1.0f);
-            const auto y = std::clamp((point.y - rect.y) / std::max(1.0f, rect.height), 0.0f, 1.0f);
-            if (x >= kDropCenterInset && x <= 1.0f - kDropCenterInset &&
-                y >= kDropCenterInset && y <= 1.0f - kDropCenterInset) {
-                return DropPosition::kCenter;
-            }
-
-            const std::array distances{ x, 1.0f - x, y, 1.0f - y };
-            const auto nearest = static_cast<std::size_t>(
-                std::ranges::min_element(distances) - distances.begin());
-            constexpr std::array positions{
-                DropPosition::kLeft,
-                DropPosition::kRight,
-                DropPosition::kTop,
-                DropPosition::kBottom
-            };
-            return positions[nearest];
-        }
-
-        [[nodiscard]] Rect Interpolate(const Rect& current, const Rect& target, float amount)
-        {
-            return {
-                std::lerp(current.x, target.x, amount),
-                std::lerp(current.y, target.y, amount),
-                std::lerp(current.width, target.width, amount),
-                std::lerp(current.height, target.height, amount)
-            };
-        }
-
-        [[nodiscard]] bool NearlyEqual(const Rect& left, const Rect& right)
-        {
-            constexpr float kTolerance = 0.25f;
-            return std::abs(left.x - right.x) <= kTolerance &&
-                std::abs(left.y - right.y) <= kTolerance &&
-                std::abs(left.width - right.width) <= kTolerance &&
-                std::abs(left.height - right.height) <= kTolerance;
-        }
-
-        [[nodiscard]] std::vector<LeafRect> AnimateLayout(const std::vector<LeafRect>& target)
-        {
-            std::unordered_set<ItemKey, ItemKeyHash> active;
-            active.reserve(target.size());
-            std::vector<LeafRect> result;
-            result.reserve(target.size());
-
-            const auto deltaTime = std::clamp(ImGui::GetIO()->DeltaTime, 0.0f, 0.05f);
-            const auto amount = 1.0f - std::exp(-kLayoutAnimationSpeed * deltaTime);
-            for (const auto& leaf : target) {
-                active.insert(leaf.item);
-                auto [entry, inserted] = animatedRects.try_emplace(leaf.item, leaf.rect);
-                if (!inserted) {
-                    entry->second = Interpolate(entry->second, leaf.rect, amount);
-                    if (NearlyEqual(entry->second, leaf.rect)) {
-                        entry->second = leaf.rect;
-                    }
-                }
-                result.push_back({ leaf.item, entry->second });
-            }
-            std::erase_if(animatedRects, [&](const auto& entry) {
-                return !active.contains(entry.first);
-            });
-            return result;
-        }
-
-        void ResetLayoutAnimation()
-        {
-            animatedRects.clear();
-        }
-
-        [[nodiscard]] std::optional<Rect> DirectionalDropCue()
-        {
-            if (!dragState.active || !dragState.target.IsValid() ||
-                dragState.position == DropPosition::kCenter) {
-                return std::nullopt;
-            }
-
-            auto cue = dragState.targetRect;
-            if (dragState.position == DropPosition::kLeft || dragState.position == DropPosition::kRight) {
-                cue.width *= 0.5f;
-                if (dragState.position == DropPosition::kRight) {
-                    cue.x += cue.width;
-                }
-            } else {
-                cue.height *= 0.5f;
-                if (dragState.position == DropPosition::kBottom) {
-                    cue.y += cue.height;
-                }
-            }
-            return cue;
-        }
-
         [[nodiscard]] ImGui::ImVec2 MeasureText(float size, std::string_view text)
         {
             return ImGui::ImFontManger::CalcTextSizeA(
@@ -337,6 +256,7 @@ namespace TFM::UI
             float y{ 0.0f };
             Rect equipIndicator{};
             Rect hotkeyIndicator{};
+            float fontSize{};
         };
 
         struct RenderTile
@@ -363,7 +283,6 @@ namespace TFM::UI
         {
             std::vector<RenderTile> tiles;
             std::optional<RenderGhost> ghost;
-            std::optional<Rect> dropCue;
         };
 
         [[nodiscard]] ItemLabelLayout CalculateItemLabelLayout(
@@ -373,7 +292,9 @@ namespace TFM::UI
         {
             const bool showEquipIndicator = item.equipState != EquipState::kNone;
             const bool showHotkeyIndicator = item.hotkey > 0;
-            const auto fontSize = static_cast<float>(Config::Get().textSize);
+            const auto fontSize = std::clamp(std::min(bounds.height * 0.22f, bounds.width * 0.20f),
+                4.0f, static_cast<float>(Config::Get().textSize) *
+                    std::clamp(ImGui::GetIO()->DisplaySize.y / 1080.0f, 0.75f, 3.0f));
             const auto indicatorScale = fontSize / static_cast<float>(Config::kTextSizeDefault);
             const auto equipIndicatorSize = kDefaultEquipIndicatorSize * indicatorScale;
             const auto hotkeyIndicatorSize = kDefaultHotkeyIndicatorSize * indicatorScale;
@@ -386,7 +307,7 @@ namespace TFM::UI
             auto text = BuildItemLabel(item.name, item.count, fontSize, maximumTextWidth);
             const auto measuredText = MeasureText(fontSize, text);
             const auto groupLeft = bounds.CenterX() - (leadingWidth + measuredText.x + trailingWidth) * 0.5f;
-            const auto labelY = preview.Bottom() + 2.0f;
+            const auto labelY = std::max(preview.Bottom(), bounds.Bottom() - fontSize * 1.15f);
 
             Rect equipIndicator{};
             if (showEquipIndicator) {
@@ -411,7 +332,8 @@ namespace TFM::UI
                 groupLeft + leadingWidth,
                 labelY,
                 equipIndicator,
-                hotkeyIndicator
+                hotkeyIndicator,
+                fontSize
             };
         }
 
@@ -545,6 +467,8 @@ namespace TFM::UI
                 .leftPressed = leftDown && !previousMouseLeftDown,
                 .leftReleased = !leftDown && previousMouseLeftDown,
                 .rightPressed = rightDown && !previousMouseRightDown,
+                .rightReleased = !rightDown && previousMouseRightDown,
+                .rightDown = rightDown,
                 .leftDown = leftDown
             };
             previousMouseLeftDown = leftDown;
@@ -795,12 +719,12 @@ namespace TFM::UI
 
         [[nodiscard]] Rect PreviewAreaFor(const LeafRect& leaf)
         {
-            const auto labelHeight = std::clamp(leaf.rect.height * 0.24f, 48.0f, 76.0f);
+            const auto padding = std::min({8.0f, leaf.rect.width * 0.08f, leaf.rect.height * 0.08f});
             return {
-                leaf.rect.x + 8.0f,
-                leaf.rect.y + 8.0f,
-                std::max(1.0f, leaf.rect.width - 16.0f),
-                std::max(1.0f, leaf.rect.height - labelHeight - 12.0f)
+                leaf.rect.x + padding,
+                leaf.rect.y + padding,
+                std::max(0.5f, leaf.rect.width - 2 * padding),
+                std::max(0.5f, leaf.rect.height * 0.72f - padding)
             };
         }
 
@@ -816,7 +740,7 @@ namespace TFM::UI
 
         [[nodiscard]] std::optional<Rect> DragGhostRect()
         {
-            if (!dragState.active) {
+            if (!dragState.active || dragState.resize || dragState.frameSelection) {
                 return std::nullopt;
             }
             constexpr float kMaximumGhostWidth = 320.0f;
@@ -871,12 +795,12 @@ namespace TFM::UI
                     };
                 }
             }
-            scene.dropCue = DirectionalDropCue();
             return scene;
         }
 
         void SubmitScaleformLayout(
             const ImGui::ImVec2& screen,
+            Rect panel,
             const RenderScene& scene,
             const Config::Settings& settings)
         {
@@ -904,6 +828,7 @@ namespace TFM::UI
             IconLayer::SubmitLayout(
                 screen.x,
                 screen.y,
+                panel,
                 iconTiles,
                 scene.ghost ? std::optional{ scene.ghost->bounds } : std::nullopt,
                 scene.ghost ? std::optional{ scene.ghost->key } : std::nullopt,
@@ -958,7 +883,7 @@ namespace TFM::UI
 
         void StartControllerDrag(const std::vector<LeafRect>& leaves)
         {
-            if (leaves.size() < 2 || dragState.source.IsValid()) {
+            if (leaves.empty() || dragState.source.IsValid() || gridEditor.HasDraft() || gridEditor.regionMode) {
                 return;
             }
             const auto source = FindLeaf(leaves, focusedItem);
@@ -1003,79 +928,219 @@ namespace TFM::UI
             }
         }
 
-        [[nodiscard]] bool UpdateDrag(const std::vector<LeafRect>& leaves)
+        int Quantize(float distance, float step, int previous)
         {
-            if (!dragState.source.IsValid()) {
+            const auto units = std::clamp(distance / step, -float(kGridLimit), float(kGridLimit));
+            if (std::abs(units - previous) <= 0.60f) {
+                return previous;
+            }
+            return static_cast<int>(std::round(units));
+        }
+
+        Cells Resized(Cells cells, int dx, int dy, bool shrink)
+        {
+            const auto change = [shrink](int& position, int& size, int delta) {
+                if (shrink) {
+                    const int removed = std::min(std::abs(delta), size - 1);
+                    if (delta < 0) {
+                        position += removed;
+                    }
+                    size -= removed;
+                } else {
+                    position += std::min(0, delta);
+                    size += std::abs(delta);
+                }
+            };
+            change(cells.x, cells.w, dx);
+            change(cells.y, cells.h, dy);
+            return cells;
+        }
+
+        void UpdateTilePreview(const Grid& live, const GridGeometry& geometry, const std::vector<LeafRect>& leaves)
+        {
+            const auto* source = live.Find(dragState.source);
+            if (!source) {
+                return;
+            }
+            auto tile = *source;
+            dragState.preview.reset();
+            dragState.blocked = false;
+            const auto pointer = dragState.pointerPosition;
+            if (dragState.resize) {
+                dragState.horizontal = Quantize(pointer.x - dragState.pressPosition.x, geometry.stepX, dragState.horizontal);
+                dragState.vertical = Quantize(pointer.y - dragState.pressPosition.y, geometry.stepY, dragState.vertical);
+                tile.cells = Resized(tile.cells, dragState.horizontal, dragState.vertical, dragState.shrink);
+                const auto valid = live.ResizePreview(tile);
+                dragState.blocked = !valid || *valid != tile.cells;
+                if (valid) {
+                    tile.cells = *valid;
+                    if (tile.cells != source->cells) {
+                        tile.wantedWidth = tile.cells.w;
+                        tile.wantedHeight = tile.cells.h;
+                    }
+                    dragState.preview = tile;
+                }
+                return;
+            }
+
+            if (gridEditor.OverControls(pointer) || !Contains(geometry.bounds, pointer)) {
+                dragState.target = {};
+                dragState.edgeHeld = 0;
+                dragState.blocked = true;
+                return;
+            }
+
+            const auto anchor = geometry.CellAt({
+                pointer.x - dragState.grabOffset.x + geometry.stepX * 0.5f,
+                pointer.y - dragState.grabOffset.y + geometry.stepY * 0.5f
+            });
+            tile.cells.x = anchor.x;
+            tile.cells.y = anchor.y;
+            const auto hoveredCell = geometry.CellAt(pointer);
+            tile.location = gridEditor.current;
+            tile.location.global = live.GlobalAt(hoveredCell.x, hoveredCell.y);
+
+            ItemKey target;
+            if (gridEditor.editing) {
+                for (const auto& leaf : leaves) {
+                    if (leaf.item == source->Key() || !Contains(leaf.rect, pointer)) {
+                        continue;
+                    }
+                    const auto edgeX = std::min(pointer.x - leaf.rect.x, leaf.rect.Right() - pointer.x);
+                    const auto edgeY = std::min(pointer.y - leaf.rect.y, leaf.rect.Bottom() - pointer.y);
+                    if (edgeX <= std::min(leaf.rect.width * 0.24f, geometry.stepX * 0.35f) ||
+                        edgeY <= std::min(leaf.rect.height * 0.24f, geometry.stepY * 0.35f)) {
+                        target = leaf.item;
+                    }
+                    break;
+                }
+            }
+            if (target != dragState.target) {
+                dragState.target = target;
+                dragState.edgeHeld = 0;
+            } else if (target.IsValid()) {
+                dragState.edgeHeld += std::max(0.0f, ImGui::GetIO()->DeltaTime);
+            }
+            if (const auto* other = live.Find(target); other && dragState.edgeHeld >= 0.30f) {
+                tile.cells.w = tile.wantedWidth = other->cells.w;
+                tile.cells.h = tile.wantedHeight = other->cells.h;
+                dragState.preview = live.Imitate(tile);
+            } else if (live.Fits(tile)) {
+                dragState.preview = tile;
+            }
+            dragState.blocked = !dragState.preview;
+        }
+
+        bool HandlePointer(const Grid& live, const Grid& display, const GridGeometry& geometry,
+            const std::vector<LeafRect>& leaves)
+        {
+            const auto mouse = ImGui::GetIO()->MousePos;
+            const bool allowed = !gridEditor.OverControls(mouse) && ImGui::IsWindowHovered();
+            const bool leftPressed = nonBlockingInputFrame ? pointerInput.leftPressed :
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left, false);
+            const bool rightPressed = nonBlockingInputFrame ? pointerInput.rightPressed :
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right, false);
+            if (!dragState.source.IsValid() && !dragState.frameSelection && allowed) {
+                if (gridEditor.regionMode && leftPressed && Contains(geometry.bounds, mouse)) {
+                    dragState.frameSelection = true;
+                    dragState.startCell = geometry.CellAt(mouse);
+                } else if (!gridEditor.regionMode && !gridEditor.HasDraft() && (leftPressed || rightPressed)) {
+                    const auto leaf = std::ranges::find_if(leaves, [&](const auto& entry) { return Contains(entry.rect, mouse); });
+                    if (leaf != leaves.end()) {
+                        focusedItem = leaf->item;
+                        dragState.source = leaf->item;
+                        dragState.sourceRect = leaf->rect;
+                        dragState.pressPosition = mouse;
+                        dragState.grabOffset = {mouse.x - leaf->rect.x, mouse.y - leaf->rect.y};
+                        dragState.resize = rightPressed && !leftPressed;
+                        dragState.shrink = dragState.resize && (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                        gridEditor.feedback.clear();
+                    }
+                }
+            }
+
+            const bool released = dragState.resize ?
+                (nonBlockingInputFrame ? pointerInput.rightReleased : ImGui::IsMouseReleased(ImGuiMouseButton_Right)) :
+                (nonBlockingInputFrame ? pointerInput.leftReleased : ImGui::IsMouseReleased(ImGuiMouseButton_Left));
+            if (dragState.frameSelection) {
+                dragState.held += std::max(0.0f, ImGui::GetIO()->DeltaTime);
+                if (dragState.held >= 0.22f) {
+                    auto end = geometry.CellAt(mouse);
+                    end.x = std::clamp(end.x, 0, display.settings.columns - 1);
+                    end.y = std::clamp(end.y, 0, display.settings.rows - 1);
+                    const auto start = dragState.startCell;
+                    dragState.region = Cells{std::min(start.x, end.x), std::min(start.y, end.y),
+                        std::abs(start.x - end.x) + 1, std::abs(start.y - end.y) + 1};
+                }
+                if (released) {
+                    if (dragState.region) {
+                        gridEditor.PreviewMask(live, *dragState.region);
+                    }
+                    dragState = {};
+                }
                 return false;
             }
 
+            if (!dragState.source.IsValid()) {
+                return false;
+            }
             if (dragState.controller) {
                 UpdateControllerDragPointer();
             } else {
-                dragState.pointerPosition = ImGui::GetIO()->MousePos;
+                dragState.pointerPosition = mouse;
+                const auto dx = mouse.x - dragState.pressPosition.x;
+                const auto dy = mouse.y - dragState.pressPosition.y;
+                dragState.active |= dx * dx + dy * dy >= kDragThreshold * kDragThreshold;
             }
-            const auto pointer = dragState.pointerPosition;
-            const auto leftDown =
-                nonBlockingInputFrame ? pointerInput.leftDown : ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            const auto leftReleased =
-                nonBlockingInputFrame ? pointerInput.leftReleased : ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-            if (!dragState.controller && !dragState.active && leftDown) {
-                const auto dx = pointer.x - dragState.pressPosition.x;
-                const auto dy = pointer.y - dragState.pressPosition.y;
-                dragState.active = dx * dx + dy * dy >= kDragThreshold * kDragThreshold;
-            }
-
-            dragState.target = {};
-            dragState.targetRect = {};
-            dragState.position = DropPosition::kCenter;
             if (dragState.active) {
-                for (const auto& leaf : leaves) {
-                    if (leaf.item != dragState.source && Contains(leaf.rect, pointer)) {
-                        dragState.target = leaf.item;
-                        dragState.targetRect = leaf.rect;
-                        dragState.position = DropPositionFor(leaf.rect, pointer);
-                        break;
-                    }
-                }
+                UpdateTilePreview(live, geometry, leaves);
             }
 
-            if (dragState.controller) {
-                if (!std::exchange(dragState.dropRequested, false)) {
-                    return false;
-                }
-                if (!dragState.target.IsValid()) {
-                    dragState = {};
-                    return false;
-                }
-                const auto source = dragState.source;
-                const auto target = dragState.target;
-                const auto position = dragState.position;
-                if (!Layout::GetSingleton().ApplyDrop({ source, target, position })) {
-                    return false;
-                }
-                focusedItem = source;
-                dragState = {};
-                return true;
+            if (!(dragState.controller ? dragState.dropRequested : released)) {
+                return false;
             }
-
-            if (leftReleased) {
-                const auto source = dragState.source;
-                const auto target = dragState.target;
-                const auto position = dragState.position;
-                const auto wasDragging = dragState.active;
-                dragState = {};
-                if (wasDragging) {
-                    if (target.IsValid() && Layout::GetSingleton().ApplyDrop({ source, target, position })) {
-                        focusedItem = source;
-                        return true;
+            const auto drag = std::exchange(dragState, {});
+            if (drag.active) {
+                auto next = live;
+                const auto* original = live.Find(drag.source);
+                if (drag.preview && original && (drag.preview->cells != original->cells ||
+                    drag.preview->location != original->location || drag.preview->wantedWidth != original->wantedWidth ||
+                    drag.preview->wantedHeight != original->wantedHeight) && next.Move(*drag.preview)) {
+                    auto& layout = Layout::GetSingleton();
+                    layout.Commit(std::move(next));
+                    if (drag.blocked) {
+                        gridEditor.feedback = "Resize stopped at a tile, region boundary, or grid edge.";
                     }
-                } else {
-                    Activate(Favorites::GetSingleton().Find(source), Actions::Hand::kRight);
+                    return true;
                 }
-            } else if (!leftDown) {
-                dragState = {};
+                if (drag.blocked) {
+                    gridEditor.feedback = drag.resize ? "Resize blocked by a tile, grid edge, or region boundary." :
+                        (drag.target.IsValid() ? "No free rectangle for that size in the target region." :
+                            "Drop blocked by a tile, grid edge, or region boundary.");
+                }
+            } else if (!gridEditor.editing && allowed && Contains(drag.sourceRect, mouse)) {
+                Activate(Favorites::GetSingleton().Find(drag.source), drag.resize ? Actions::Hand::kLeft : Actions::Hand::kRight);
             }
             return false;
+        }
+
+        void DrawGesture(ImGui::ImDrawList* drawList, const GridGeometry& geometry)
+        {
+            if (!dragState.active) {
+                return;
+            }
+            const auto color = dragState.blocked ? IM_COL32(244, 123, 94, 255) : IM_COL32(93, 227, 199, 255);
+            const auto bounds = dragState.preview ? geometry.RectFor(dragState.preview->cells) : dragState.sourceRect;
+            ImGui::ImDrawListManager::AddRect(drawList, Min(bounds), Max(bounds), color, 1, 0, 3);
+            if (dragState.preview) {
+                const auto c = dragState.preview->cells;
+                ImGui::SetTooltip("%s%d x %d", dragState.blocked ? "Limit: " :
+                    (dragState.target.IsValid() && dragState.edgeHeld >= 0.30f ? "Copy size: " : ""), c.w, c.h);
+            } else if (dragState.target.IsValid() && dragState.edgeHeld < 0.30f) {
+                ImGui::SetTooltip("Hold to copy tile size");
+            } else if (dragState.blocked) {
+                ImGui::SetTooltip("No legal placement at the pointer");
+            }
         }
 
         void HandleMenuInput(const std::vector<LeafRect>& leaves)
@@ -1107,6 +1172,9 @@ namespace TFM::UI
                 }
             }
 
+            if (gridEditor.editing) {
+                return;
+            }
             if (confirmButtonPressed) {
                 Activate(Favorites::GetSingleton().Find(focusedItem), Actions::Hand::kDefault);
                 return;
@@ -1118,25 +1186,12 @@ namespace TFM::UI
             }
         }
 
-        [[nodiscard]] std::vector<LeafRect> PreviewLayout(
-            const std::vector<LeafRect>& committed,
-            const Rect& bounds,
-            float gap)
-        {
-            if (!dragState.active || !dragState.target.IsValid()) {
-                return committed;
-            }
-            const auto preview = Layout::GetSingleton().CalculatePreview(
-                bounds,
-                gap,
-                { dragState.source, dragState.target, dragState.position });
-            return preview ? std::move(*preview) : committed;
-        }
-
         void DrawEmpty(ImGui::ImDrawList* drawList, const Rect& bounds)
         {
             const auto message = "No favorites yet";
-            const auto fontSize = static_cast<float>(Config::Get().textSize);
+            const auto fontSize = std::clamp(std::min(bounds.height * 0.22f, bounds.width * 0.20f),
+                4.0f, static_cast<float>(Config::Get().textSize) *
+                    std::clamp(ImGui::GetIO()->DisplaySize.y / 1080.0f, 0.75f, 3.0f));
             const auto messageSize = MeasureText(fontSize, message);
             DrawText(
                 drawList,
@@ -1145,20 +1200,6 @@ namespace TFM::UI
                 bounds.CenterY() - messageSize.y * 0.5f,
                 kText,
                 message);
-        }
-
-        void DrawDropCue(ImGui::ImDrawList* drawList, const std::optional<Rect>& cue)
-        {
-            if (!cue) {
-                return;
-            }
-            ImGui::ImDrawListManager::AddRectFilled(
-                drawList,
-                Min(*cue),
-                Max(*cue),
-                IM_COL32(238, 232, 214, 32),
-                0.0f,
-                0);
         }
 
         void DrawTile(ImGui::ImDrawList* drawList, const RenderTile& tile)
@@ -1174,7 +1215,7 @@ namespace TFM::UI
 
             DrawText(
                 drawList,
-                static_cast<float>(settings.textSize),
+                tile.label.fontSize,
                 tile.label.x,
                 tile.label.y,
                 kText,
@@ -1202,31 +1243,6 @@ namespace TFM::UI
                     0);
             }
 
-            ImGui::SetCursorScreenPos(Min(tile.leaf.rect));
-            const auto buttonID = std::format("##TFM_{:08X}_{}", item.key.formID, item.key.uniqueID);
-            static_cast<void>(ImGui::InvisibleButton(
-                buttonID.c_str(),
-                { tile.leaf.rect.width, tile.leaf.rect.height }));
-            const auto hovered = nonBlockingInputFrame ? tile.hovered : ImGui::IsItemHovered();
-            const auto leftPressed =
-                nonBlockingInputFrame ? pointerInput.leftPressed : ImGui::IsMouseClicked(ImGuiMouseButton_Left, false);
-            const auto rightPressed =
-                nonBlockingInputFrame ? pointerInput.rightPressed : ImGui::IsMouseClicked(ImGuiMouseButton_Right, false);
-            if (!dragState.source.IsValid() && hovered && leftPressed) {
-                focusedItem = item.key;
-                dragState.source = item.key;
-                dragState.sourceRect = tile.leaf.rect;
-                dragState.pressPosition = ImGui::GetIO()->MousePos;
-                dragState.pointerPosition = dragState.pressPosition;
-                dragState.grabOffset = {
-                    dragState.pressPosition.x - tile.leaf.rect.x,
-                    dragState.pressPosition.y - tile.leaf.rect.y
-                };
-            }
-            if (!dragState.active && hovered && rightPressed) {
-                focusedItem = item.key;
-                Activate(std::addressof(item), Actions::Hand::kLeft);
-            }
         }
 
         void DrawDragOverlay(ImGui::ImDrawList* drawList, const std::optional<RenderGhost>& ghost)
@@ -1243,7 +1259,7 @@ namespace TFM::UI
             }
             DrawText(
                 drawList,
-                static_cast<float>(Config::Get().textSize),
+                ghost->label.fontSize,
                 ghost->label.x,
                 ghost->label.y,
                 kText,
@@ -1405,14 +1421,32 @@ namespace TFM::UI
             const auto& settings = Config::Get();
             previewCache.BeginFrame();
 
-            const Rect bounds{
-                settings.outerMargin,
-                settings.outerMargin,
-                std::max(1.0f, screen.x - settings.outerMargin * 2.0f),
-                std::max(1.0f, screen.y - settings.outerMargin * 2.0f)
-            };
-            auto leaves = Layout::GetSingleton().Calculate(bounds, settings.gap);
-            inputHotkeyTarget.store(PackItemKey(HotkeyTarget(leaves)), std::memory_order_release);
+            if (screen.x < 2 || screen.y < 2) {
+                return;
+            }
+            auto& layout = Layout::GetSingleton();
+            auto live = layout.Snapshot();
+            if (pendingCancel.exchange(false, std::memory_order_acq_rel)) {
+                if (dragState.source.IsValid() || dragState.frameSelection) {
+                    dragState = {};
+                } else if (!gridEditor.Cancel()) {
+                    gridEditor.editing = false;
+                    gridEditor.regionMode = false;
+                }
+            }
+            auto display = gridEditor.Draft(live);
+            gridEditor.ClampPage(display);
+            if (const auto turn = pendingPageTurn.exchange(0, std::memory_order_acq_rel); turn != 0) {
+                dragState = {};
+                gridEditor.Turn(display, turn);
+            }
+            const auto geometry = gridEditor.Geometry(display, screen);
+            const auto bounds = geometry.window;
+            auto leaves = gridEditor.Leaves(display, geometry);
+            if (controllerInputActive && !FindLeaf(leaves, focusedItem)) {
+                focusedItem = leaves.empty() ? ItemKey{} : leaves.front().item;
+            }
+            inputHotkeyTarget.store(gridEditor.editing ? 0 : PackItemKey(HotkeyTarget(leaves)), std::memory_order_release);
 
             bool layoutSubmitted = false;
             std::optional<RenderScene> renderScene;
@@ -1423,7 +1457,7 @@ namespace TFM::UI
             }
             if (presentationState != IconLayer::PresentationState::kReady) {
                 renderScene = BuildRenderScene(leaves, false, controllerInputActive);
-                SubmitScaleformLayout(screen, *renderScene, settings);
+                SubmitScaleformLayout(screen, bounds, *renderScene, settings);
                 layoutSubmitted = true;
                 presentationState = IconLayer::GetPresentationState();
                 if (presentationState == IconLayer::PresentationState::kFailed) {
@@ -1432,7 +1466,14 @@ namespace TFM::UI
                 }
             }
             if (settings.previewMode == Config::PreviewMode::kMeshes) {
-                const bool meshesReady = previewCache.Update(Favorites::GetSingleton().Items());
+                std::vector<FavoriteItem> visibleFavorites;
+                visibleFavorites.reserve(leaves.size());
+                for (const auto& leaf : leaves) {
+                    if (const auto* item = Favorites::GetSingleton().Find(leaf.item)) {
+                        visibleFavorites.push_back(*item);
+                    }
+                }
+                const bool meshesReady = previewCache.Update(visibleFavorites);
                 if (!initialMeshRevealComplete) {
                     if (!meshesReady && !incrementalMeshRevealAllowed) {
                         return;
@@ -1447,9 +1488,9 @@ namespace TFM::UI
             ImGui::SetNextWindowPos({ 0.0f, 0.0f }, ImGuiCond_Always);
             ImGui::SetNextWindowSize(screen, ImGuiCond_Always);
             ImGui::SetNextWindowBgAlpha(0.0f);
-            ImGui::SetNextWindowFocus();
             constexpr auto flags =
                 ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_NoBringToFrontOnFocus |
                 ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoResize |
                 ImGuiWindowFlags_NoScrollbar |
@@ -1464,22 +1505,19 @@ namespace TFM::UI
                 const auto drawList = ImGui::GetWindowDrawList();
                 HandleMenuInput(leaves);
                 if (IsOpen()) {
-                    if (UpdateDrag(leaves)) {
-                        leaves = Layout::GetSingleton().Calculate(bounds, settings.gap);
+                    if (HandlePointer(live, display, geometry, leaves)) {
+                        live = layout.Snapshot();
+                        leaves = gridEditor.Leaves(live, geometry);
                     }
                     if (!renderScene) {
-                        const auto preview = PreviewLayout(leaves, bounds, settings.gap);
-                        const auto animated = AnimateLayout(preview);
-                        inputHotkeyTarget.store(PackItemKey(HotkeyTarget(animated)), std::memory_order_release);
-                        renderScene = BuildRenderScene(animated, true, controllerInputActive);
+                        renderScene = BuildRenderScene(leaves, true, controllerInputActive);
                     }
                     if (!layoutSubmitted) {
-                        SubmitScaleformLayout(screen, *renderScene, settings);
+                        SubmitScaleformLayout(screen, bounds, *renderScene, settings);
                     }
                     if (renderScene->tiles.empty()) {
                         DrawEmpty(drawList, bounds);
                     } else {
-                        DrawDropCue(drawList, renderScene->dropCue);
                         for (const auto& tile : renderScene->tiles) {
                             DrawTile(drawList, tile);
                             if (!IsOpen()) {
@@ -1488,12 +1526,30 @@ namespace TFM::UI
                         }
                     }
                     if (IsOpen()) {
+                        gridEditor.DrawMask(live, display, geometry, dragState.region, drawList);
                         DrawDragOverlay(drawList, renderScene->ghost);
+                        DrawGesture(drawList, geometry);
+                        if (!dragState.active && !gridEditor.OverControls(ImGui::GetIO()->MousePos)) {
+                            const auto hover = std::ranges::find_if(renderScene->tiles, [](const auto& tile) { return tile.hovered; });
+                            if (hover != renderScene->tiles.end()) {
+                                ImGui::SetTooltip("%s", hover->item.name.c_str());
+                            }
+                        }
                     }
                 }
             }
             ImGui::End();
             ImGui::PopStyleVar(3);
+            if (IsOpen()) {
+                const auto page = gridEditor.current;
+                gridEditor.DrawControls(live, geometry, focusedItem);
+                if (gridEditor.current != page) {
+                    dragState = {};
+                }
+                enteringText.store(ImGui::GetIO()->WantTextInput, std::memory_order_release);
+                canCancelEdit.store(gridEditor.editing || dragState.source.IsValid() || dragState.frameSelection,
+                    std::memory_order_release);
+            }
         }
 
         bool __stdcall ProcessInput(RE::InputEvent* event)
@@ -1532,6 +1588,25 @@ namespace TFM::UI
             }
 
             if (menuOpen) {
+                if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
+                    const auto key = static_cast<RE::BSKeyboardDevice::Key>(button->GetIDCode());
+                    if (key == RE::BSKeyboardDevice::Key::kQ || key == RE::BSKeyboardDevice::Key::kE) {
+                        if (button->IsDown() && !enteringText.load(std::memory_order_acquire)) {
+                            pendingPageTurn.fetch_add(key == RE::BSKeyboardDevice::Key::kQ ? -1 : 1,
+                                std::memory_order_release);
+                        }
+                        if (key == RE::BSKeyboardDevice::Key::kQ && button->IsUp()) {
+                            favoritesButtonDown = false;
+                        }
+                        return true;
+                    }
+                    if (key == RE::BSKeyboardDevice::Key::kEscape && canCancelEdit.load(std::memory_order_acquire)) {
+                        if (button->IsDown()) {
+                            pendingCancel.store(true, std::memory_order_release);
+                        }
+                        return true;
+                    }
+                }
                 if (IsCloseMenuInput(*button, *userEvents)) {
                     if (button->IsDown()) {
                         Close();
@@ -1715,7 +1790,6 @@ namespace TFM::UI
         window->BlockUserInput.store(Config::Get().pauseGameWhileOpen, std::memory_order_release);
         const auto wasOpen = window->IsOpen.load();
         if (!wasOpen) {
-            ResetLayoutAnimation();
             controllerInputActive = IsControllerActive();
             centerCursorOnNextFrame = !controllerInputActive;
             scaleformCursorRequestCooldown = 0;
@@ -1724,6 +1798,7 @@ namespace TFM::UI
         IconLayer::SetActive(true, Config::Get().previewMode == Config::PreviewMode::kIcons);
         RefreshFavorites();
         if (!wasOpen) {
+            gridEditor.RevealFavorites(Layout::GetSingleton().Snapshot());
             const auto useMeshes = Config::Get().previewMode == Config::PreviewMode::kMeshes;
             initialMeshRevealComplete = !useMeshes;
             incrementalMeshRevealAllowed = useMeshes && std::ranges::any_of(
@@ -1751,12 +1826,16 @@ namespace TFM::UI
     void Close()
     {
         const auto wasOpen = window && window->IsOpen.exchange(false);
+        gridEditor.Reset();
+        pendingPageTurn.store(0, std::memory_order_release);
+        pendingCancel.store(false, std::memory_order_release);
+        canCancelEdit.store(false, std::memory_order_release);
+        enteringText.store(false, std::memory_order_release);
         IconLayer::SetActive(false, false);
         PreviewCache::GetSingleton().SetVisible(false);
         dragState = {};
         ResetControllerInput();
         centerCursorOnNextFrame = false;
-        ResetLayoutAnimation();
         initialMeshRevealComplete = false;
         incrementalMeshRevealAllowed = false;
         postActivationRefreshFrames = 0;
