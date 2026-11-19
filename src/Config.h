@@ -35,6 +35,12 @@ namespace TFM::Config
         kMinimal
     };
 
+    enum class ControlMode : std::uint8_t
+    {
+        kQE = 1,
+        kAD = 2
+    };
+
     struct Settings
     {
         bool pauseGameWhileOpen{ true };
@@ -53,6 +59,8 @@ namespace TFM::Config
 
     [[nodiscard]] const Settings& Get();
     void Load();
+    [[nodiscard]] ControlMode GetControlMode();
+    void SetControlMode(ControlMode mode);
     void SetPauseGameWhileOpen(bool enabled);
     void SetCloseOnSelection(bool enabled);
     void SetPreviewMode(PreviewMode mode);

@@ -6,6 +6,7 @@ namespace TFM::Config
     namespace
     {
         Settings settings;
+        std::atomic<ControlMode> controlMode{ ControlMode::kQE };
         constexpr auto kPath = L"Data\\SKSE\\Plugins\\TileableFavoritesMenu.ini";
 
         [[nodiscard]] bool ReadBool(const wchar_t* section, const wchar_t* key, bool fallback)
@@ -115,6 +116,8 @@ namespace TFM::Config
 
     void Load()
     {
+        const auto mode = ReadUInt(L"General", L"ControlMode", 1);
+        controlMode.store(mode == 2 ? ControlMode::kAD : ControlMode::kQE);
         settings.pauseGameWhileOpen =
             ReadBool(L"General", L"PauseGameWhileOpen", settings.pauseGameWhileOpen);
         settings.closeOnSelection = ReadBool(L"General", L"CloseOnSelection", settings.closeOnSelection);
@@ -160,6 +163,18 @@ namespace TFM::Config
             settings.borderScale,
             settings.frameScale,
             settings.textSize);
+    }
+
+    ControlMode GetControlMode()
+    {
+        return controlMode.load();
+    }
+
+    void SetControlMode(ControlMode mode)
+    {
+        if (controlMode.exchange(mode) != mode) {
+            PersistValue(L"General", L"ControlMode", mode == ControlMode::kAD ? L"2" : L"1", "ControlMode");
+        }
     }
 
     void SetPauseGameWhileOpen(bool enabled)
@@ -306,7 +321,9 @@ namespace TFM::Config
     void ResetToDefaults()
     {
         settings = Settings{};
+        controlMode.store(ControlMode::kQE);
 
+        PersistValue(L"General", L"ControlMode", L"1", "ControlMode");
         PersistValue(L"General", L"PauseGameWhileOpen", L"1", "PauseGameWhileOpen");
         PersistValue(L"General", L"CloseOnSelection", L"0", "CloseOnSelection");
         PersistValue(L"Rendering", L"PreviewMode", L"Icons", "PreviewMode");

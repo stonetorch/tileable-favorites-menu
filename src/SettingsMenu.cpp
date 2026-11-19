@@ -15,6 +15,19 @@ namespace TFM::SettingsMenu
 
         void __stdcall Render()
         {
+            constexpr std::array controlModes{
+                "Mode 1 (Q / E to switch pages)",
+                "Mode 2 (A / D to switch pages, Q to close)"
+            };
+            auto controlMode = Config::GetControlMode() == Config::ControlMode::kQE ? 0 : 1;
+            if (ImGuiMCP::Combo(
+                    "Control mode",
+                    std::addressof(controlMode),
+                    controlModes.data(),
+                    static_cast<int>(controlModes.size()))) {
+                Config::SetControlMode(controlMode == 0 ? Config::ControlMode::kQE : Config::ControlMode::kAD);
+            }
+
             constexpr std::array previewModes{
                 "Flat SkyUI icons",
                 "3D meshes (Experimental)"

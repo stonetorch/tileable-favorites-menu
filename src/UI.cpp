@@ -1587,18 +1587,25 @@ namespace TFM::UI
 
             if (menuOpen) {
                 if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
-                    const auto key = static_cast<RE::BSKeyboardDevice::Key>(button->GetIDCode());
-                    if (key == RE::BSKeyboardDevice::Key::kQ || key == RE::BSKeyboardDevice::Key::kE) {
-                        if (button->IsDown() && !enteringText.load(std::memory_order_acquire)) {
-                            pendingPageTurn.fetch_add(key == RE::BSKeyboardDevice::Key::kQ ? -1 : 1,
-                                std::memory_order_release);
-                        }
-                        if (key == RE::BSKeyboardDevice::Key::kQ && button->IsUp()) {
+                    using Key = RE::BSKeyboardDevice::Key;
+                    const auto key = static_cast<Key>(button->GetIDCode());
+                    const auto useAD = Config::GetControlMode() == Config::ControlMode::kAD;
+                    const auto previous = useAD ? Key::kA : Key::kQ;
+                    const auto next = useAD ? Key::kD : Key::kE;
+                    if (key == previous || key == next || key == Key::kQ) {
+                        if (key == Key::kQ && button->IsUp()) {
                             favoritesButtonDown = false;
+                        }
+                        if (button->IsDown() && !enteringText.load(std::memory_order_acquire)) {
+                            if (useAD && key == Key::kQ) {
+                                Close();
+                            } else {
+                                pendingPageTurn.fetch_add(key == previous ? -1 : 1, std::memory_order_release);
+                            }
                         }
                         return true;
                     }
-                    if (key == RE::BSKeyboardDevice::Key::kEscape && canCancelEdit.load(std::memory_order_acquire)) {
+                    if (key == Key::kEscape && canCancelEdit.load(std::memory_order_acquire)) {
                         if (button->IsDown()) {
                             pendingCancel.store(true, std::memory_order_release);
                         }

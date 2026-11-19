@@ -10,10 +10,14 @@ Requires the SKSE and Address Library for your runtime, plus SKSE Menu Framework
 
 ## Controls
 
+Choose **Control mode** in **Tileable Favorites Menu > Settings** in SKSE Menu Framework.
+
 | Input                                                          | Result                                                                           |
 |----------------------------------------------------------------|----------------------------------------------------------------------------------|
 | Q in gameplay                                                  | Opens Favorites through the native game binding                                  |
-| Q or E in Favorites                                            | Previous or next page                                                            |
+| Q or E in Favorites (Mode 1, default)                          | Previous or next page                                                            |
+| A or D in Favorites (Mode 2)                                    | Previous or next page                                                            |
+| Q in Favorites (Mode 2)                                         | Closes Favorites                                                                 |
 | Category badge or page dot                                     | First page of that category or the exact page                                    |
 | Tab                                                            | Closes Favorites                                                                 |
 | Short left click or right click                                | Upstream action, with right click retaining left-hand selection where applicable |
