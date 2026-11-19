@@ -163,9 +163,8 @@ namespace TFM::UI
             PlayerEquipEventSink() = default;
         };
 
-        constexpr ImGui::ImU32 kText = IM_COL32(236, 236, 236, 255);
+        constexpr ImGui::ImU32 kText = Theme::kTextColor;
         constexpr ImGui::ImU32 kHotkeyBackground = IM_COL32(12, 14, 18, 210);
-        constexpr ImGui::ImU32 kFocusOutline = IM_COL32(238, 232, 214, 255);
         constexpr float kFocusOutlineThickness = 3.0f;
 
         [[nodiscard]] ImGui::ImVec2 Min(const Rect& rect) { return { rect.x, rect.y }; }
@@ -292,9 +291,9 @@ namespace TFM::UI
         {
             const bool showEquipIndicator = item.equipState != EquipState::kNone;
             const bool showHotkeyIndicator = item.hotkey > 0;
-            const auto fontSize = std::clamp(std::min(bounds.height * 0.22f, bounds.width * 0.20f),
-                4.0f, static_cast<float>(Config::Get().textSize) *
-                    std::clamp(ImGui::GetIO()->DisplaySize.y / 1080.0f, 0.75f, 3.0f));
+            const auto configuredFontSize = static_cast<float>(Config::Get().textSize);
+            const auto fontSize = std::min({configuredFontSize, bounds.height * 0.22f, bounds.width * 0.20f});
+            const auto padding = kItemLabelHorizontalPadding * (fontSize / configuredFontSize);
             const auto indicatorScale = fontSize / static_cast<float>(Config::kTextSizeDefault);
             const auto equipIndicatorSize = kDefaultEquipIndicatorSize * indicatorScale;
             const auto hotkeyIndicatorSize = kDefaultHotkeyIndicatorSize * indicatorScale;
@@ -303,11 +302,11 @@ namespace TFM::UI
             const auto trailingWidth = showHotkeyIndicator ? indicatorGap + hotkeyIndicatorSize : 0.0f;
             const auto maximumTextWidth = std::max(
                 1.0f,
-                bounds.width - kItemLabelHorizontalPadding * 2.0f - leadingWidth - trailingWidth);
+                bounds.width - padding * 2.0f - leadingWidth - trailingWidth);
             auto text = BuildItemLabel(item.name, item.count, fontSize, maximumTextWidth);
             const auto measuredText = MeasureText(fontSize, text);
             const auto groupLeft = bounds.CenterX() - (leadingWidth + measuredText.x + trailingWidth) * 0.5f;
-            const auto labelY = std::max(preview.Bottom(), bounds.Bottom() - fontSize * 1.15f);
+            const auto labelY = preview.Bottom() + 2.0f * (fontSize / configuredFontSize);
 
             Rect equipIndicator{};
             if (showEquipIndicator) {
@@ -717,24 +716,16 @@ namespace TFM::UI
             meshPrewarmReady = cache.Prewarm(Favorites::GetSingleton().Items());
         }
 
-        [[nodiscard]] Rect PreviewAreaFor(const LeafRect& leaf)
+        [[nodiscard]] Rect PreviewAreaFor(const Rect& bounds)
         {
-            const auto padding = std::min({8.0f, leaf.rect.width * 0.08f, leaf.rect.height * 0.08f});
+            const auto padding = std::min({8.0f, bounds.width * 0.08f, bounds.height * 0.08f});
+            const auto labelHeight = std::min(
+                std::clamp(bounds.height * 0.24f, 48.0f, 76.0f), bounds.height / 3.0f);
             return {
-                leaf.rect.x + padding,
-                leaf.rect.y + padding,
-                std::max(0.5f, leaf.rect.width - 2 * padding),
-                std::max(0.5f, leaf.rect.height * 0.72f - padding)
-            };
-        }
-
-        [[nodiscard]] Rect GhostPreviewAreaFor(const Rect& bounds)
-        {
-            return {
-                bounds.x + 8.0f,
-                bounds.y + 8.0f,
-                std::max(1.0f, bounds.width - 16.0f),
-                std::max(1.0f, bounds.height - 66.0f)
+                bounds.x + padding,
+                bounds.y + padding,
+                bounds.width - 2.0f * padding,
+                bounds.height - labelHeight - 1.5f * padding
             };
         }
 
@@ -770,7 +761,7 @@ namespace TFM::UI
                 if (!item) {
                     continue;
                 }
-                const auto preview = PreviewAreaFor(leaf);
+                const auto preview = PreviewAreaFor(leaf.rect);
                 scene.tiles.push_back({
                     .leaf = leaf,
                     .item = *item,
@@ -785,7 +776,7 @@ namespace TFM::UI
             if (const auto bounds = DragGhostRect()) {
                 const auto item = Favorites::GetSingleton().Find(dragState.source);
                 if (item) {
-                    const auto preview = GhostPreviewAreaFor(*bounds);
+                    const auto preview = PreviewAreaFor(*bounds);
                     scene.ghost = RenderGhost{
                         .key = dragState.source,
                         .item = *item,
@@ -804,11 +795,14 @@ namespace TFM::UI
             const RenderScene& scene,
             const Config::Settings& settings)
         {
-            std::optional<Rect> dragGhostEquipIndicator;
+            std::optional<IconLayer::DragGhost> dragGhost;
             if (scene.ghost) {
-                if (scene.ghost->item.equipState != EquipState::kNone) {
-                    dragGhostEquipIndicator = scene.ghost->label.equipIndicator;
-                }
+                dragGhost = IconLayer::DragGhost{
+                    .key = scene.ghost->key,
+                    .bounds = scene.ghost->bounds,
+                    .preview = scene.ghost->preview,
+                    .equipIndicator = scene.ghost->label.equipIndicator
+                };
             }
 
             std::vector<IconLayer::Tile> iconTiles;
@@ -830,9 +824,7 @@ namespace TFM::UI
                 screen.y,
                 panel,
                 iconTiles,
-                scene.ghost ? std::optional{ scene.ghost->bounds } : std::nullopt,
-                scene.ghost ? std::optional{ scene.ghost->key } : std::nullopt,
-                dragGhostEquipIndicator,
+                dragGhost,
                 settings.backdropAlpha,
                 settings.tileAlpha,
                 settings.tileStyle == Config::TileStyle::kFramed,
@@ -1032,15 +1024,14 @@ namespace TFM::UI
         }
 
         bool HandlePointer(const Grid& live, const Grid& display, const GridGeometry& geometry,
-            const std::vector<LeafRect>& leaves)
+            const std::vector<LeafRect>& leaves, bool pointerOverGrid)
         {
             const auto mouse = ImGui::GetIO()->MousePos;
-            const bool allowed = !gridEditor.OverControls(mouse) && ImGui::IsWindowHovered();
             const bool leftPressed = nonBlockingInputFrame ? pointerInput.leftPressed :
                 ImGui::IsMouseClicked(ImGuiMouseButton_Left, false);
             const bool rightPressed = nonBlockingInputFrame ? pointerInput.rightPressed :
                 ImGui::IsMouseClicked(ImGuiMouseButton_Right, false);
-            if (!dragState.source.IsValid() && !dragState.frameSelection && allowed) {
+            if (!dragState.source.IsValid() && !dragState.frameSelection && pointerOverGrid) {
                 if (gridEditor.regionMode && leftPressed && Contains(geometry.bounds, mouse)) {
                     dragState.frameSelection = true;
                     dragState.startCell = geometry.CellAt(mouse);
@@ -1118,7 +1109,7 @@ namespace TFM::UI
                         (drag.target.IsValid() ? "No free rectangle for that size in the target region." :
                             "Drop blocked by a tile, grid edge, or region boundary.");
                 }
-            } else if (!gridEditor.editing && allowed && Contains(drag.sourceRect, mouse)) {
+            } else if (!gridEditor.editing && pointerOverGrid && Contains(drag.sourceRect, mouse)) {
                 Activate(Favorites::GetSingleton().Find(drag.source), drag.resize ? Actions::Hand::kLeft : Actions::Hand::kRight);
             }
             return false;
@@ -1189,9 +1180,7 @@ namespace TFM::UI
         void DrawEmpty(ImGui::ImDrawList* drawList, const Rect& bounds)
         {
             const auto message = "No favorites yet";
-            const auto fontSize = std::clamp(std::min(bounds.height * 0.22f, bounds.width * 0.20f),
-                4.0f, static_cast<float>(Config::Get().textSize) *
-                    std::clamp(ImGui::GetIO()->DisplaySize.y / 1080.0f, 0.75f, 3.0f));
+            const auto fontSize = static_cast<float>(Config::Get().textSize);
             const auto messageSize = MeasureText(fontSize, message);
             DrawText(
                 drawList,
@@ -1202,31 +1191,29 @@ namespace TFM::UI
                 message);
         }
 
+        void DrawItemLabel(ImGui::ImDrawList* drawList, const Rect& bounds, const ItemLabelLayout& label,
+            std::int8_t hotkey)
+        {
+            ImGui::PushClipRect(Min(bounds), Max(bounds), true);
+            DrawText(drawList, label.fontSize, label.x, label.y, kText, label.text);
+            DrawHotkeyIndicator(drawList, hotkey, label.hotkeyIndicator);
+            ImGui::PopClipRect();
+        }
+
         void DrawTile(ImGui::ImDrawList* drawList, const RenderTile& tile)
         {
             const auto& item = tile.item;
-
-            const auto& settings = Config::Get();
-            const auto usingIcons = settings.previewMode == Config::PreviewMode::kIcons;
-
-            if (!usingIcons) {
+            if (Config::Get().previewMode == Config::PreviewMode::kMeshes) {
                 DrawCachedPreview(drawList, item, tile.preview);
             }
 
-            DrawText(
-                drawList,
-                tile.label.fontSize,
-                tile.label.x,
-                tile.label.y,
-                kText,
-                tile.label.text);
-            DrawHotkeyIndicator(drawList, item.hotkey, tile.label.hotkeyIndicator);
+            DrawItemLabel(drawList, tile.leaf.rect, tile.label, item.hotkey);
             if (tile.focused) {
                 ImGui::ImDrawListManager::AddRect(
                     drawList,
                     Min(tile.leaf.rect),
                     Max(tile.leaf.rect),
-                    kFocusOutline,
+                    Theme::kFocusColor,
                     Theme::kCornerRadius,
                     0,
                     kFocusOutlineThickness);
@@ -1242,7 +1229,6 @@ namespace TFM::UI
                     Theme::kCornerRadius,
                     0);
             }
-
         }
 
         void DrawDragOverlay(ImGui::ImDrawList* drawList, const std::optional<RenderGhost>& ghost)
@@ -1257,14 +1243,7 @@ namespace TFM::UI
                     ghost->preview,
                     IM_COL32(255, 255, 255, 235));
             }
-            DrawText(
-                drawList,
-                ghost->label.fontSize,
-                ghost->label.x,
-                ghost->label.y,
-                kText,
-                ghost->label.text);
-            DrawHotkeyIndicator(drawList, ghost->item.hotkey, ghost->label.hotkeyIndicator);
+            DrawItemLabel(drawList, ghost->bounds, ghost->label, ghost->item.hotkey);
         }
 
         void RestoreVanillaAfterPresentationFailure()
@@ -1488,13 +1467,11 @@ namespace TFM::UI
             ImGui::SetNextWindowPos({ 0.0f, 0.0f }, ImGuiCond_Always);
             ImGui::SetNextWindowSize(screen, ImGuiCond_Always);
             ImGui::SetNextWindowBgAlpha(0.0f);
+            // Keep the drawing surface full-screen for drag ghosts without covering the control windows' hit areas.
             constexpr auto flags =
                 ImGuiWindowFlags_NoDecoration |
-                ImGuiWindowFlags_NoBringToFrontOnFocus |
-                ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoScrollbar |
-                ImGuiWindowFlags_NoScrollWithMouse |
+                ImGuiWindowFlags_NoInputs |
+                ImGuiWindowFlags_NoFocusOnAppearing |
                 ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoBackground;
 
@@ -1505,12 +1482,17 @@ namespace TFM::UI
                 const auto drawList = ImGui::GetWindowDrawList();
                 HandleMenuInput(leaves);
                 if (IsOpen()) {
-                    if (HandlePointer(live, display, geometry, leaves)) {
+                    const auto mouse = ImGui::GetIO()->MousePos;
+                    const bool pointerOverGrid = Contains(geometry.bounds, mouse) && !gridEditor.OverControls(mouse) &&
+                        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !ImGui::IsAnyItemActive() &&
+                        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+                    if (HandlePointer(live, display, geometry, leaves, pointerOverGrid)) {
                         live = layout.Snapshot();
                         leaves = gridEditor.Leaves(live, geometry);
                     }
                     if (!renderScene) {
-                        renderScene = BuildRenderScene(leaves, true, controllerInputActive);
+                        const bool trackHover = !controllerInputActive && pointerOverGrid;
+                        renderScene = BuildRenderScene(leaves, trackHover, controllerInputActive);
                     }
                     if (!layoutSubmitted) {
                         SubmitScaleformLayout(screen, bounds, *renderScene, settings);
@@ -1529,8 +1511,10 @@ namespace TFM::UI
                         gridEditor.DrawMask(live, display, geometry, dragState.region, drawList);
                         DrawDragOverlay(drawList, renderScene->ghost);
                         DrawGesture(drawList, geometry);
-                        if (!dragState.active && !gridEditor.OverControls(ImGui::GetIO()->MousePos)) {
-                            const auto hover = std::ranges::find_if(renderScene->tiles, [](const auto& tile) { return tile.hovered; });
+                        if (!dragState.active) {
+                            const auto hover = std::ranges::find_if(renderScene->tiles, [](const auto& tile) {
+                                return tile.hovered && !tile.label.text.starts_with(tile.item.name);
+                            });
                             if (hover != renderScene->tiles.end()) {
                                 ImGui::SetTooltip("%s", hover->item.name.c_str());
                             }

@@ -72,9 +72,7 @@ namespace TFM::IconLayer
             float borderScale{ 1.0f };
             float frameScale{ 1.0f };
             std::vector<Tile> tiles;
-            std::optional<Rect> dragGhost;
-            std::optional<ItemKey> dragGhostItem;
-            std::optional<Rect> dragGhostEquipIndicator;
+            std::optional<DragGhost> dragGhost;
 
             friend bool operator==(const LayoutSnapshot&, const LayoutSnapshot&) = default;
         };
@@ -135,16 +133,6 @@ namespace TFM::IconLayer
             });
         }
 
-        [[nodiscard]] bool HasCompleteLayout(const SharedState& state)
-        {
-            if (state.layout.screenWidth <= 0.0f || state.layout.screenHeight <= 0.0f) {
-                return false;
-            }
-            return std::ranges::all_of(state.items, [&](const ItemKey& key) {
-                return std::ranges::find(state.layout.tiles, key, &Tile::key) != state.layout.tiles.end();
-            });
-        }
-
         [[nodiscard]] bool IconLoadsSettled(const SharedState& state)
         {
             if (!state.iconsEnabled) {
@@ -169,7 +157,9 @@ namespace TFM::IconLayer
                 state.descriptorRevision != descriptorRevision || state.layoutRevision != layoutRevision) {
                 return false;
             }
-            state.presentationReady = HasCompleteLayout(state) && IconLoadsSettled(state);
+            // The snapshot describes the current page, which can legitimately have no tiles.
+            state.presentationReady =
+                state.layout.screenWidth > 0.0f && state.layout.screenHeight > 0.0f && IconLoadsSettled(state);
             return state.presentationReady;
         }
 
@@ -235,6 +225,8 @@ namespace TFM::IconLayer
             std::scoped_lock lock(state.mutex);
             state.loaded.insert(key);
             state.failed.erase(key);
+            // Loading can finish after positioning the clip. Reapply the current page's transform and visibility.
+            ++state.layoutRevision;
         }
 
         void ReportFailed(const ItemKey& key, std::string error)
@@ -563,7 +555,6 @@ namespace TFM::IconLayer
                 RE::GFxValue color;
                 params.thisPtr->GetMember("iconColor", std::addressof(color));
                 ApplyColor(icon, color.IsNumber() ? static_cast<std::uint32_t>(color.GetNumber()) : 0xFFFFFF);
-                icon.SetMember("_visible", true);
                 ReportLoaded(KeyFromListener(*params.thisPtr));
             }
         };
@@ -1180,7 +1171,7 @@ namespace TFM::IconLayer
                     if (layout.dragGhost) {
                         DrawRoundRect(
                             background_,
-                            ToStageRect(*layout.dragGhost, layout, visible),
+                            ToStageRect(layout.dragGhost->bounds, layout, visible),
                             Theme::kCornerRadius,
                             Theme::kBackdropColor,
                             std::max(layout.tileAlpha, 0.90f) * 100.0f);
@@ -1348,7 +1339,7 @@ namespace TFM::IconLayer
                 }
                 const bool ghostBecameReady = RefreshFrameReadiness(ghostFrame_);
                 if (layout.dragGhost && (layoutChanged || ghostBecameReady)) {
-                    PositionFrame(ghostFrame_, *layout.dragGhost, std::max(layout.tileAlpha, 0.90f), layout);
+                    PositionFrame(ghostFrame_, layout.dragGhost->bounds, std::max(layout.tileAlpha, 0.90f), layout);
                 } else if (!layout.dragGhost) {
                     ghostFrame_.clip.SetMember("_visible", false);
                 }
@@ -1431,8 +1422,8 @@ namespace TFM::IconLayer
 
                     if (layoutChanged || created || stateChanged) {
                         auto indicator = tile.equipIndicator;
-                        if (layout.dragGhostItem == tile.key && layout.dragGhostEquipIndicator) {
-                            indicator = *layout.dragGhostEquipIndicator;
+                        if (layout.dragGhost && layout.dragGhost->key == tile.key) {
+                            indicator = layout.dragGhost->equipIndicator;
                         }
                         PositionEquipIcon(*found, indicator, layout);
                     }
@@ -1451,21 +1442,17 @@ namespace TFM::IconLayer
                 const auto uniformScale = std::min(scaleX, scaleY);
 
                 for (auto& slot : slots_) {
+                    if (!slot.clip.IsDisplayObject()) {
+                        continue;
+                    }
                     const auto found = std::ranges::find(layout.tiles, slot.key, &Tile::key);
-                    if (found == layout.tiles.end() || !slot.clip.IsDisplayObject()) {
+                    if (found == layout.tiles.end()) {
                         slot.clip.SetMember("_visible", false);
                         continue;
                     }
 
-                    auto preview = found->preview;
-                    if (layout.dragGhost && layout.dragGhostItem == slot.key) {
-                        preview = {
-                            layout.dragGhost->x + 8.0f,
-                            layout.dragGhost->y + 8.0f,
-                            std::max(1.0f, layout.dragGhost->width - 16.0f),
-                            std::max(1.0f, layout.dragGhost->height - 66.0f)
-                        };
-                    }
+                    const auto& preview = layout.dragGhost && layout.dragGhost->key == slot.key ?
+                        layout.dragGhost->preview : found->preview;
 
                     const auto available = std::max(1.0f, std::min(preview.width, preview.height));
                     const auto targetPixels = std::min(220.0f, std::max(std::min(48.0f, available), available * 0.68f));
@@ -1477,6 +1464,7 @@ namespace TFM::IconLayer
                     display.SetPosition(centerX - targetStage * 0.5f, centerY - targetStage * 0.5f);
                     const auto iconScale = targetStage / kIconLibrarySize * 100.0f;
                     display.SetScale(iconScale, iconScale);
+                    display.SetVisible(true);
                     slot.clip.SetDisplayInfo(display);
                 }
             }
@@ -1615,9 +1603,7 @@ namespace TFM::IconLayer
         float screenHeight,
         Rect panel,
         std::span<const Tile> tiles,
-        std::optional<Rect> dragGhost,
-        std::optional<ItemKey> dragGhostItem,
-        std::optional<Rect> dragGhostEquipIndicator,
+        std::optional<DragGhost> dragGhost,
         float backdropAlpha,
         float tileAlpha,
         bool useFrames,
@@ -1635,8 +1621,6 @@ namespace TFM::IconLayer
         next.frameScale = frameScale;
         next.tiles.assign(tiles.begin(), tiles.end());
         next.dragGhost = dragGhost;
-        next.dragGhostItem = dragGhostItem;
-        next.dragGhostEquipIndicator = dragGhostEquipIndicator;
 
         auto& state = State();
         std::scoped_lock lock(state.mutex);

@@ -6,6 +6,8 @@
 namespace TFM::Theme
 {
     inline constexpr std::uint32_t kBackdropColor = 0x000000;
+    inline constexpr std::uint32_t kTextColor = 0xFFECECEC;
+    inline constexpr std::uint32_t kFocusColor = 0xFFD6E8EE;
     inline constexpr float kCornerRadius = 1.5f;
     inline constexpr float kHoverAlphaBoost = 0.08f;
     inline constexpr float kActiveAlphaBoost = 0.04f;

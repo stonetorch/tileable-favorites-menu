@@ -1,5 +1,8 @@
 #include "GridEditor.h"
 
+#include "Config.h"
+#include "Theme.h"
+
 namespace TFM::UI
 {
     namespace ImGui = ImGuiMCP;
@@ -37,6 +40,18 @@ namespace TFM::UI
         {
             ImGui::SetNextItemWidth(120);
             return ImGui::SliderInt(label, &value, low, high);
+        }
+
+        bool DrawPageDot(bool selected)
+        {
+            const auto height = ImGui::GetFrameHeight();
+            const auto pressed = ImGui::Button("##Page", {height * 0.65f, height});
+            const auto min = ImGui::GetItemRectMin();
+            const auto max = ImGui::GetItemRectMax();
+            const ImVec2 center{(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f};
+            const auto color = selected || ImGui::IsItemHovered() ? Theme::kFocusColor : IM_COL32(236, 236, 236, 118);
+            ImDrawListManager::AddCircleFilled(ImGui::GetWindowDrawList(), center, selected ? 3.5f : 2.5f, color, 12);
+            return pressed;
         }
     }
 
@@ -267,7 +282,17 @@ namespace TFM::UI
             std::clamp(y, 0.0f, std::max(0.0f, screen.y - height)), width, height};
         ImGui::SetNextWindowPos({navigationRect_.x, navigationRect_.y}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({width, height}, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.94f);
+        const auto backdropAlpha = Config::Get().backdropAlpha;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Theme::kCornerRadius);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Theme::kCornerRadius);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, Theme::kBackdropColor | IM_COL32(0, 0, 0, 255));
+        ImGui::PushStyleColor(ImGuiCol_Text, Theme::kTextColor);
+        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(236, 236, 236, 26));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(236, 236, 236, 48));
+        ImGui::SetNextWindowBgAlpha(backdropAlpha);
         if (ImGui::Begin("##TFME navigation", nullptr, kOverlayFlags | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus)) {
             if (ImGui::Button("<##Previous")) {
                 Turn(grid, -1);
@@ -296,7 +321,9 @@ namespace TFM::UI
                 if (!vertical) {
                     ImGui::SameLine();
                 }
-                ImGui::Checkbox("Paint regions", &regionMode);
+                if (ImGui::Button(regionMode ? "Stop painting" : "Paint regions")) {
+                    regionMode = !regionMode;
+                }
             }
             if (ImGui::BeginChild("##Pages", {0, 0}, 0, vertical ? 0 : ImGuiWindowFlags_HorizontalScrollbar)) {
                 for (unsigned g = 0; g < grid.groups.size(); ++g) {
@@ -305,7 +332,15 @@ namespace TFM::UI
                     if (!vertical && g != 0) {
                         ImGui::SameLine(0, 16);
                     }
-                    if (ImGui::SmallButton(group.icon.empty() ? group.name.c_str() : group.icon.c_str())) {
+                    const auto selected = current.group == g;
+                    if (selected) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, Theme::kFocusColor);
+                    }
+                    const auto pressed = ImGui::SmallButton(group.icon.empty() ? group.name.c_str() : group.icon.c_str());
+                    if (selected) {
+                        ImGui::PopStyleColor();
+                    }
+                    if (pressed) {
                         current = {g, 0, false};
                     }
                     if (ImGui::IsItemHovered()) {
@@ -320,7 +355,7 @@ namespace TFM::UI
                     for (unsigned p = start; p < std::min(size, start + visible); ++p) {
                         ImGui::SameLine(0, 3);
                         ImGui::PushID(static_cast<int>(p));
-                        if (ImGui::SmallButton(current == Location{g, p, false} ? "o" : ".")) {
+                        if (DrawPageDot(current == Location{g, p, false})) {
                             current = {g, p, false};
                         }
                         if (ImGui::IsItemHovered()) {
@@ -347,6 +382,8 @@ namespace TFM::UI
             ImGui::EndChild();
         }
         ImGui::End();
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar(4);
 
         settingsRect_ = {};
         if (editing && settingsOpen_) {
