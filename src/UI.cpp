@@ -999,24 +999,22 @@ namespace TFM::UI
 
             ItemKey target;
             std::optional<TileEdge> targetEdge;
-            if (gridEditor.editing) {
-                for (const auto& leaf : leaves) {
-                    if (leaf.item == source->Key() || !Contains(leaf.rect, pointer)) {
-                        continue;
-                    }
-                    const auto left = pointer.x - leaf.rect.x;
-                    const auto right = leaf.rect.Right() - pointer.x;
-                    const auto top = pointer.y - leaf.rect.y;
-                    const auto bottom = leaf.rect.Bottom() - pointer.y;
-                    const bool nearX = std::min(left, right) <= std::min(leaf.rect.width * 0.24f, geometry.stepX * 0.35f);
-                    const bool nearY = std::min(top, bottom) <= std::min(leaf.rect.height * 0.24f, geometry.stepY * 0.35f);
-                    if (nearX != nearY) {
-                        target = leaf.item;
-                        targetEdge = nearX ? (left < right ? TileEdge::left : TileEdge::right) :
-                            (top < bottom ? TileEdge::top : TileEdge::bottom);
-                    }
-                    break;
+            for (const auto& leaf : leaves) {
+                if (leaf.item == source->Key() || !Contains(leaf.rect, pointer)) {
+                    continue;
                 }
+                const auto left = pointer.x - leaf.rect.x;
+                const auto right = leaf.rect.Right() - pointer.x;
+                const auto top = pointer.y - leaf.rect.y;
+                const auto bottom = leaf.rect.Bottom() - pointer.y;
+                const bool nearX = std::min(left, right) <= std::min(leaf.rect.width * 0.24f, geometry.stepX * 0.35f);
+                const bool nearY = std::min(top, bottom) <= std::min(leaf.rect.height * 0.24f, geometry.stepY * 0.35f);
+                if (nearX != nearY) {
+                    target = leaf.item;
+                    targetEdge = nearX ? (left < right ? TileEdge::left : TileEdge::right) :
+                        (top < bottom ? TileEdge::top : TileEdge::bottom);
+                }
+                break;
             }
             dragState.target = target;
             dragState.targetEdge = targetEdge;
