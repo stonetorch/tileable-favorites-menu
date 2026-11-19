@@ -2,6 +2,7 @@
 #include "Types.h"
 
 #include <algorithm>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,6 +23,11 @@ namespace TFM
 
         auto KeyOf(const auto& item) { return KeyOf(item.form, item.instance); }
         auto KeyOf(ItemKey key) { return KeyOf(key.formID, key.uniqueID); }
+
+        bool Overlaps(Cells a, Cells b)
+        {
+            return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        }
 
         class Occupancy
         {
@@ -73,6 +79,24 @@ namespace TFM
                 return FindRectangle(tile, false);
             }
 
+            void FindNearest(Placement tile, Cells area, Cells origin,
+                std::optional<Placement>& result, int& distance) const
+            {
+                for (int y = area.y; y <= area.y + area.h - tile.cells.h; ++y) {
+                    for (int x = area.x; x <= area.x + area.w - tile.cells.w; ++x) {
+                        const auto dx = x - origin.x;
+                        const auto dy = y - origin.y;
+                        const auto candidateDistance = dx * dx + dy * dy;
+                        tile.cells.x = x;
+                        tile.cells.y = y;
+                        if (candidateDistance < distance && Fits(tile)) {
+                            result = tile;
+                            distance = candidateDistance;
+                        }
+                    }
+                }
+            }
+
         private:
             bool FindRectangle(Placement& tile, bool keepPosition) const
             {
@@ -98,6 +122,19 @@ namespace TFM
         bool Valid(const Grid& grid, Location loc)
         {
             return loc.global || (loc.group < grid.groups.size() && loc.page < grid.groups[loc.group].pages.size());
+        }
+
+        Occupancy OccupiedByOthers(const Grid& grid, const Placement& tile, const Placement* displaced = nullptr)
+        {
+            Occupancy occupied(grid);
+            for (const auto& other : grid.tiles) {
+                if (other.Key() != tile.Key() && (!displaced || other.Key() != displaced->Key()) &&
+                    (Slot(other.location) == Slot(tile.location) ||
+                        (displaced && Slot(other.location) == Slot(displaced->location))) && grid.Inside(other.cells)) {
+                    occupied.Add(other);
+                }
+            }
+            return occupied;
         }
     }
 
@@ -137,27 +174,89 @@ namespace TFM
 
     bool Grid::Fits(const Placement& tile) const
     {
-        Occupancy occupied(*this);
-        for (const auto& other : tiles) {
-            if (Slot(other.location) == Slot(tile.location) && other.Key() != tile.Key() && Inside(other.cells)) {
-                occupied.Add(other);
-            }
-        }
-        return Valid(*this, tile.location) && occupied.Fits(tile);
+        return Valid(*this, tile.location) && OccupiedByOthers(*this, tile).Fits(tile);
     }
 
     std::optional<Placement> Grid::Imitate(Placement tile) const
     {
-        Occupancy occupied(*this);
-        for (const auto& other : tiles) {
-            if (Slot(other.location) == Slot(tile.location) && other.Key() != tile.Key() && Inside(other.cells)) {
-                occupied.Add(other);
-            }
-        }
+        const auto occupied = OccupiedByOthers(*this, tile);
         if (Valid(*this, tile.location) && occupied.FindSpace(tile, false)) {
             return tile;
         }
         return {};
+    }
+
+    std::optional<TileDrop> Grid::AdjacentDrop(Placement tile, const Placement& target, TileEdge edge) const
+    {
+        tile.location = target.location;
+        tile.cells = target.cells;
+        tile.wantedWidth = tile.cells.w;
+        tile.wantedHeight = tile.cells.h;
+        switch (edge) {
+        case TileEdge::left: tile.cells.x -= tile.cells.w; break;
+        case TileEdge::right: tile.cells.x += tile.cells.w; break;
+        case TileEdge::top: tile.cells.y -= tile.cells.h; break;
+        case TileEdge::bottom: tile.cells.y += tile.cells.h; break;
+        }
+        return Fits(tile) ? std::optional{TileDrop{tile, {}}} : std::nullopt;
+    }
+
+    std::optional<TileDrop> Grid::DropPreview(Placement tile) const
+    {
+        const auto* source = Find(tile.Key());
+        if (!source || !Valid(*this, tile.location) || !Inside(tile.cells)) {
+            return {};
+        }
+        const auto destinationSlot = Slot(tile.location);
+        const auto sourceSlot = Slot(source->location);
+        const bool reuseSourceRegion = source->location.global != tile.location.global &&
+            Inside(source->cells) && Valid(*this, source->location);
+        const Placement* displaced = nullptr;
+        Occupancy occupied(*this);
+        for (const auto& other : tiles) {
+            const auto slot = Slot(other.location);
+            if ((slot != destinationSlot && !(reuseSourceRegion && slot == sourceSlot)) ||
+                other.Key() == tile.Key() || !Inside(other.cells)) {
+                continue;
+            }
+            if (slot == destinationSlot && Overlaps(tile.cells, other.cells)) {
+                if (displaced) {
+                    return {};
+                }
+                displaced = &other;
+            } else {
+                occupied.Add(other);
+            }
+        }
+        if (!occupied.Fits(tile)) {
+            return {};
+        }
+        if (!displaced) {
+            return TileDrop{tile, {}};
+        }
+
+        occupied.Add(tile);
+        const auto nearest = [&](Placement candidate) {
+            std::optional<Placement> result;
+            int distance = std::numeric_limits<int>::max();
+            occupied.FindNearest(candidate, {0, 0, settings.columns, settings.rows}, displaced->cells, result, distance);
+            if (reuseSourceRegion) {
+                candidate.location = source->location;
+                occupied.FindNearest(candidate, source->cells, displaced->cells, result, distance);
+            }
+            return result;
+        };
+
+        auto destination = nearest(*displaced);
+        if (!destination && (displaced->cells.w != 1 || displaced->cells.h != 1)) {
+            auto singleCell = *displaced;
+            singleCell.cells.w = singleCell.cells.h = 1;
+            destination = nearest(singleCell);
+        }
+        if (destination) {
+            return TileDrop{tile, destination};
+        }
+        return TileDrop{tile, *displaced, true};
     }
 
     std::optional<Cells> Grid::ResizePreview(const Placement& tile) const
@@ -445,15 +544,56 @@ namespace TFM
 
     bool Grid::Move(Placement tile)
     {
+        return Move(TileDrop{tile, {}});
+    }
+
+    bool Grid::Move(const TileDrop& drop)
+    {
+        const auto& [tile, displaced, overflow] = drop;
         const auto existing = std::ranges::find_if(tiles, [&](const auto& other) { return other.Key() == tile.Key(); });
-        if (existing == tiles.end() || !Fits(tile)) {
+        if (existing == tiles.end() || !Valid(*this, tile.location)) {
             return false;
         }
-        tile.pinned = true;
-        if (!tile.location.global) {
-            groups[tile.location.group].pages[tile.location.page].edited = true;
+        auto occupied = OccupiedByOthers(*this, tile, displaced ? &*displaced : nullptr);
+        if (!occupied.Fits(tile)) {
+            return false;
         }
-        *existing = tile;
+        auto other = tiles.end();
+        if (displaced) {
+            other = std::ranges::find_if(tiles, [&](const auto& entry) { return entry.Key() == displaced->Key(); });
+            if (other == tiles.end() || other == existing) {
+                return false;
+            }
+            if (overflow) {
+                if (Slot(other->location) != Slot(tile.location) || !Inside(other->cells) ||
+                    !Overlaps(tile.cells, other->cells)) {
+                    return false;
+                }
+            } else {
+                occupied.Add(tile);
+                if (!Valid(*this, displaced->location) || !occupied.Fits(*displaced)) {
+                    return false;
+                }
+            }
+        } else if (overflow) {
+            return false;
+        }
+        const auto place = [&](Placement& current, Placement next) {
+            next.pinned = true;
+            if (!next.location.global) {
+                groups[next.location.group].pages[next.location.page].edited = true;
+            }
+            current = next;
+        };
+        if (overflow) {
+            // Keep the original group and size so reflow can route the displaced tile.
+            other->cells.x = other->cells.y = -1;
+            ++missing;
+            needsValidation = true;
+        } else if (displaced) {
+            place(*other, *displaced);
+        }
+        place(*existing, tile);
         return true;
     }
 

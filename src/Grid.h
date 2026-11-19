@@ -71,6 +71,15 @@ namespace TFM
         [[nodiscard]] ItemKey Key() const;
     };
 
+    enum class TileEdge { left, right, top, bottom };
+
+    struct TileDrop
+    {
+        Placement tile;
+        std::optional<Placement> displaced;
+        bool overflow{};
+    };
+
     struct GridItem
     {
         std::uint32_t form{};
@@ -97,6 +106,8 @@ namespace TFM
         [[nodiscard]] const Placement* Find(ItemKey key) const;
         [[nodiscard]] bool Fits(const Placement& tile) const;
         [[nodiscard]] std::optional<Placement> Imitate(Placement tile) const;
+        [[nodiscard]] std::optional<TileDrop> AdjacentDrop(Placement tile, const Placement& target, TileEdge edge) const;
+        [[nodiscard]] std::optional<TileDrop> DropPreview(Placement tile) const;
         [[nodiscard]] std::optional<Cells> ResizePreview(const Placement& tile) const;
         [[nodiscard]] unsigned PageCount() const;
         void Toggle(Cells area);
@@ -105,6 +116,7 @@ namespace TFM
         void Reflow(std::span<const GridItem> items, std::optional<Location> organize = {}, bool wholeGroup = false);
         void Reconcile(std::span<const GridItem> items);
         bool Move(Placement tile);
+        bool Move(const TileDrop& drop);
         bool DeleteGroup(unsigned group);
         bool MoveGroup(unsigned group, unsigned target);
         bool DeleteEmptyPage(Location page);

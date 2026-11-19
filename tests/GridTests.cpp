@@ -185,6 +185,124 @@ void TestSortingAndMultipleRoutes()
     CheckLayout(grid, items.size());
 }
 
+void TestAdjacentDrop()
+{
+    Grid grid;
+    grid.SetDimensions(8, 5);
+    const Location page{1, 0, false};
+    const Placement source{1, 0, {0, 0}, 1, 1, page};
+    const Placement target{2, 0, {3, 2, 2, 1}, 2, 1, page};
+    grid.tiles = {source, target};
+    for (const auto& [edge, expected] : {
+        std::pair{TileEdge::left, Cells{1, 2, 2, 1}},
+        std::pair{TileEdge::right, Cells{5, 2, 2, 1}},
+        std::pair{TileEdge::top, Cells{3, 1, 2, 1}},
+        std::pair{TileEdge::bottom, Cells{3, 3, 2, 1}}
+    }) {
+        const auto drop = grid.AdjacentDrop(source, target, edge);
+        Check(drop && drop->tile.cells == expected && drop->tile.wantedWidth == 2 && !drop->displaced,
+            "Size imitation did not align with the selected edge");
+    }
+    grid.Toggle({5, 2});
+    Check(!grid.AdjacentDrop(source, target, TileEdge::right), "Size imitation crossed a region boundary");
+}
+
+void TestOccupiedDrop()
+{
+    Grid grid;
+    grid.SetDimensions(7, 1);
+    const Location page{1, 0, false};
+    const Placement source{1, 0, {1, 0, 2, 1}, 2, 1, page};
+    const Placement target{2, 0, {5, 0, 2, 1}, 2, 1, page};
+    grid.tiles = {source, target, {3, 0, {3, 0}, 1, 1, page}};
+    auto incoming = source;
+    incoming.cells = target.cells;
+    const auto drop = grid.DropPreview(incoming);
+    Check(drop && drop->displaced && drop->displaced->cells == source.cells,
+        "Displaced tile did not use the vacated rectangle before shrinking");
+
+    auto invalid = *drop->displaced;
+    invalid.cells = incoming.cells;
+    Check(!grid.Move(TileDrop{drop->tile, invalid}) && Tile(grid, 1).cells == source.cells && !Tile(grid, 2).pinned,
+        "Invalid paired move partially changed the grid");
+    Check(grid.Move(*drop) && Tile(grid, 1).cells == target.cells &&
+        Tile(grid, 2).cells == source.cells && Tile(grid, 2).pinned, "Could not commit the previewed swap");
+    CheckLayout(grid, 3);
+
+    auto singleCell = source;
+    singleCell.cells = {1, 0};
+    grid.tiles = {singleCell, target, {3, 0, {2, 0, 2, 1}, 2, 1, page}};
+    auto cover = singleCell;
+    cover.cells = {5, 0};
+    const auto fullSize = grid.DropPreview(cover);
+    Check(fullSize && fullSize->displaced && fullSize->displaced->cells == Cells{0, 0, 2, 1},
+        "A nearby free cell took precedence over a full-size rectangle");
+    grid.tiles.push_back({4, 0, {0, 0}, 1, 1, page});
+    const auto fallback = grid.DropPreview(cover);
+    Check(fallback && fallback->displaced && fallback->displaced->cells == Cells{4, 0} &&
+        fallback->displaced->wantedWidth == 2, "Fallback did not use the nearest cell and retain the preferred size");
+
+    grid.Toggle({1, 0, 2, 1});
+    auto globalSource = source;
+    globalSource.location.global = true;
+    grid.tiles = {globalSource, target, {3, 0, {3, 0, 2, 1}, 2, 1, page}};
+    const auto crossRegion = grid.DropPreview(incoming);
+    Check(crossRegion && crossRegion->displaced && crossRegion->displaced->location.global &&
+        crossRegion->displaced->cells == source.cells && grid.Move(*crossRegion),
+        "Displaced tile did not use the vacated rectangle across the region boundary");
+    CheckLayout(grid, 3);
+}
+
+void TestCrossPageDrop()
+{
+    Grid grid;
+    grid.SetDimensions(3, 1);
+    const Location first{1, 0, false};
+    const Location second{1, 1, false};
+    const Location third{1, 2, false};
+    grid.groups[1].pages.resize(3);
+    const Placement source{1, 0, {0, 0, 2, 1}, 2, 1, second};
+    const Placement target{2, 0, {0, 0, 2, 1}, 2, 1, third};
+    const Placement blocker{3, 0, {2, 0}, 1, 1, third, true};
+    grid.tiles = {source, target, blocker};
+    std::vector items{Item(1), Item(2), Item(3)};
+
+    auto incoming = source;
+    incoming.location = third;
+    const auto overflow = grid.DropPreview(incoming);
+    Check(overflow && overflow->overflow && overflow->displaced &&
+        overflow->displaced->Key() == target.Key(), "A full destination page did not trigger overflow");
+    Check(grid.Move(*overflow), "Cross-page drop could not reserve the incoming tile's footprint");
+    grid.Reconcile(items);
+    Check(Tile(grid, 2).location == first && Tile(grid, 2).cells == target.cells &&
+        Tile(grid, 1).location == third && Tile(grid, 3).cells == blocker.cells &&
+        grid.groups[1].pages.size() == 3, "Overflow did not honor the target group's existing page order");
+    CheckLayout(grid, items.size());
+
+    auto crossCategorySource = source;
+    crossCategorySource.location = {0, 0, false};
+    grid.groups[1].pages.resize(1);
+    grid.tiles = {crossCategorySource, target, blocker};
+    grid.tiles[1].location = grid.tiles[2].location = first;
+    incoming.location = first;
+    const auto newPage = grid.DropPreview(incoming);
+    Check(newPage && newPage->overflow && grid.Move(*newPage), "Drop from a different category did not trigger overflow");
+    grid.Reconcile(items);
+    Check(Tile(grid, 2).location == second && Tile(grid, 2).cells == target.cells &&
+        grid.groups[1].pages.size() == 2 && grid.groups[1].pages[1].automatic,
+        "A full target category failed to create a continuation page for the displaced tile");
+    CheckLayout(grid, items.size());
+
+    crossCategorySource.cells.w = 1;
+    grid.tiles = {crossCategorySource, target, blocker};
+    grid.tiles[1].location = grid.tiles[2].location = first;
+    incoming.cells.w = 1;
+    const auto local = grid.DropPreview(incoming);
+    Check(local && !local->overflow && local->displaced && local->displaced->location == first &&
+        local->displaced->cells == Cells{1, 0} && local->displaced->wantedWidth == 2,
+        "A free cell on the destination page did not take priority over overflow");
+}
+
 void TestLargeRefresh()
 {
     Grid grid;
@@ -219,6 +337,9 @@ int main()
     TestRoutingAndPages();
     TestGlobalAndShrink();
     TestResizeImitateAndRestore();
+    TestAdjacentDrop();
+    TestOccupiedDrop();
+    TestCrossPageDrop();
     TestSortingAndMultipleRoutes();
     TestLargeRefresh();
     std::cout << "Grid acceptance tests passed\n";

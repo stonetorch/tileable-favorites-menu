@@ -1383,7 +1383,10 @@ namespace TFM::IconLayer
 
                 for (auto slot = equipSlots_.begin(); slot != equipSlots_.end();) {
                     const auto tile = std::ranges::find(layout.tiles, slot->key, &Tile::key);
-                    if (tile != layout.tiles.end() && tile->equipState != EquipState::kNone) {
+                    const auto ghost = layout.dragGhost && layout.dragGhost->key == slot->key ? &*layout.dragGhost : nullptr;
+                    const auto state = ghost ? ghost->equipState :
+                        (tile != layout.tiles.end() ? tile->equipState : EquipState::kNone);
+                    if (state != EquipState::kNone) {
                         ++slot;
                         continue;
                     }
@@ -1393,39 +1396,48 @@ namespace TFM::IconLayer
                     slot = equipSlots_.erase(slot);
                 }
 
-                for (const auto& tile : layout.tiles) {
-                    if (tile.equipState == EquipState::kNone) {
-                        continue;
+                const auto synchronize = [&](ItemKey key, EquipState state, const Rect& indicator) {
+                    if (state == EquipState::kNone) {
+                        return true;
                     }
 
-                    auto found = std::ranges::find(equipSlots_, tile.key, &EquipSlot::key);
+                    auto found = std::ranges::find(equipSlots_, key, &EquipSlot::key);
                     bool created = false;
                     bool stateChanged = false;
                     if (found == equipSlots_.end()) {
                         auto clip = AttachEquipIcon(
                             std::format("tfmEquipIcon{}", nextEquipDepth_),
                             nextEquipDepth_++,
-                            tile.equipState);
+                            state);
                         if (!clip.IsDisplayObject()) {
                             FailEquipLibrary("Could not instantiate EquipIcon for a favorites tile");
-                            return true;
+                            return false;
                         }
-                        equipSlots_.push_back({ tile.key, tile.equipState, std::move(clip) });
+                        equipSlots_.push_back({ key, state, std::move(clip) });
                         found = std::prev(equipSlots_.end());
                         created = true;
-                    } else if (found->state != tile.equipState) {
-                        RE::GFxValue frameLabel(EquipFrameLabel(tile.equipState).data());
+                    } else if (found->state != state) {
+                        RE::GFxValue frameLabel(EquipFrameLabel(state).data());
                         found->clip.Invoke("gotoAndStop", nullptr, std::addressof(frameLabel), 1);
-                        found->state = tile.equipState;
+                        found->state = state;
                         stateChanged = true;
                     }
 
                     if (layoutChanged || created || stateChanged) {
-                        auto indicator = tile.equipIndicator;
-                        if (layout.dragGhost && layout.dragGhost->key == tile.key) {
-                            indicator = layout.dragGhost->equipIndicator;
-                        }
                         PositionEquipIcon(*found, indicator, layout);
+                    }
+                    return true;
+                };
+                if (layout.dragGhost) {
+                    const auto& ghost = *layout.dragGhost;
+                    if (!synchronize(ghost.key, ghost.equipState, ghost.equipIndicator)) {
+                        return true;
+                    }
+                }
+                for (const auto& tile : layout.tiles) {
+                    if ((!layout.dragGhost || layout.dragGhost->key != tile.key) &&
+                        !synchronize(tile.key, tile.equipState, tile.equipIndicator)) {
+                        break;
                     }
                 }
                 return true;
@@ -1446,13 +1458,13 @@ namespace TFM::IconLayer
                         continue;
                     }
                     const auto found = std::ranges::find(layout.tiles, slot.key, &Tile::key);
-                    if (found == layout.tiles.end()) {
+                    const auto ghost = layout.dragGhost && layout.dragGhost->key == slot.key ? &*layout.dragGhost : nullptr;
+                    if (!ghost && found == layout.tiles.end()) {
                         slot.clip.SetMember("_visible", false);
                         continue;
                     }
 
-                    const auto& preview = layout.dragGhost && layout.dragGhost->key == slot.key ?
-                        layout.dragGhost->preview : found->preview;
+                    const auto& preview = ghost ? ghost->preview : found->preview;
 
                     const auto available = std::max(1.0f, std::min(preview.width, preview.height));
                     const auto targetPixels = std::min(220.0f, std::max(std::min(48.0f, available), available * 0.68f));

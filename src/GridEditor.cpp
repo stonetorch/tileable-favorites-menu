@@ -487,7 +487,7 @@ namespace TFM::UI
             bool dirty = false;
             std::optional<Location> organize;
             bool wholeGroup = false;
-            ImGui::TextWrapped("Drag a tile to move. Right-drag to grow. Shift + right-drag to shrink. Hold near a tile edge to copy its size.");
+            ImGui::TextWrapped("Press Q or E while dragging a tile to change pages. Right-drag to grow. Shift + right-drag to shrink. Drop along one edge to copy the size and place the tile alongside.");
             if (regionMode) {
                 ImGui::TextWrapped("Click a cell or drag a rectangle to switch regions. Teal cells stay visible on every page.");
             }

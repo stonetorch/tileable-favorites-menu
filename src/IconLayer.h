@@ -29,6 +29,7 @@ namespace TFM::IconLayer
         ItemKey key;
         Rect bounds;
         Rect preview;
+        EquipState equipState;
         Rect equipIndicator;
 
         friend bool operator==(const DragGhost&, const DragGhost&) = default;

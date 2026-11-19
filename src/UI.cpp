@@ -31,12 +31,12 @@ namespace TFM::UI
         {
             ItemKey source{};
             ItemKey target{};
+            std::optional<TileEdge> targetEdge;
             Rect sourceRect{};
             ImGui::ImVec2 pressPosition{};
             ImGui::ImVec2 grabOffset{};
             ImGui::ImVec2 pointerPosition{};
-            std::optional<Placement> preview;
-            float edgeHeld{};
+            std::optional<TileDrop> preview;
             int horizontal{}, vertical{};
             bool blocked{};
             bool resize{};
@@ -801,6 +801,7 @@ namespace TFM::UI
                     .key = scene.ghost->key,
                     .bounds = scene.ghost->bounds,
                     .preview = scene.ghost->preview,
+                    .equipState = scene.ghost->item.equipState,
                     .equipIndicator = scene.ghost->label.equipIndicator
                 };
             }
@@ -970,14 +971,14 @@ namespace TFM::UI
                         tile.wantedWidth = tile.cells.w;
                         tile.wantedHeight = tile.cells.h;
                     }
-                    dragState.preview = tile;
+                    dragState.preview = TileDrop{tile, {}};
                 }
                 return;
             }
 
             if (gridEditor.OverControls(pointer) || !Contains(geometry.bounds, pointer)) {
                 dragState.target = {};
-                dragState.edgeHeld = 0;
+                dragState.targetEdge.reset();
                 dragState.blocked = true;
                 return;
             }
@@ -993,32 +994,32 @@ namespace TFM::UI
             tile.location.global = live.GlobalAt(hoveredCell.x, hoveredCell.y);
 
             ItemKey target;
+            std::optional<TileEdge> targetEdge;
             if (gridEditor.editing) {
                 for (const auto& leaf : leaves) {
                     if (leaf.item == source->Key() || !Contains(leaf.rect, pointer)) {
                         continue;
                     }
-                    const auto edgeX = std::min(pointer.x - leaf.rect.x, leaf.rect.Right() - pointer.x);
-                    const auto edgeY = std::min(pointer.y - leaf.rect.y, leaf.rect.Bottom() - pointer.y);
-                    if (edgeX <= std::min(leaf.rect.width * 0.24f, geometry.stepX * 0.35f) ||
-                        edgeY <= std::min(leaf.rect.height * 0.24f, geometry.stepY * 0.35f)) {
+                    const auto left = pointer.x - leaf.rect.x;
+                    const auto right = leaf.rect.Right() - pointer.x;
+                    const auto top = pointer.y - leaf.rect.y;
+                    const auto bottom = leaf.rect.Bottom() - pointer.y;
+                    const bool nearX = std::min(left, right) <= std::min(leaf.rect.width * 0.24f, geometry.stepX * 0.35f);
+                    const bool nearY = std::min(top, bottom) <= std::min(leaf.rect.height * 0.24f, geometry.stepY * 0.35f);
+                    if (nearX != nearY) {
                         target = leaf.item;
+                        targetEdge = nearX ? (left < right ? TileEdge::left : TileEdge::right) :
+                            (top < bottom ? TileEdge::top : TileEdge::bottom);
                     }
                     break;
                 }
             }
-            if (target != dragState.target) {
-                dragState.target = target;
-                dragState.edgeHeld = 0;
-            } else if (target.IsValid()) {
-                dragState.edgeHeld += std::max(0.0f, ImGui::GetIO()->DeltaTime);
-            }
-            if (const auto* other = live.Find(target); other && dragState.edgeHeld >= 0.30f) {
-                tile.cells.w = tile.wantedWidth = other->cells.w;
-                tile.cells.h = tile.wantedHeight = other->cells.h;
-                dragState.preview = live.Imitate(tile);
-            } else if (live.Fits(tile)) {
-                dragState.preview = tile;
+            dragState.target = target;
+            dragState.targetEdge = targetEdge;
+            if (const auto* other = live.Find(target); other && targetEdge) {
+                dragState.preview = live.AdjacentDrop(tile, *other, *targetEdge);
+            } else {
+                dragState.preview = live.DropPreview(tile);
             }
             dragState.blocked = !dragState.preview;
         }
@@ -1098,9 +1099,11 @@ namespace TFM::UI
             if (drag.active) {
                 auto next = live;
                 const auto* original = live.Find(drag.source);
-                if (drag.preview && original && (drag.preview->cells != original->cells ||
-                    drag.preview->location != original->location || drag.preview->wantedWidth != original->wantedWidth ||
-                    drag.preview->wantedHeight != original->wantedHeight) && next.Move(*drag.preview)) {
+                if (drag.preview && original && (drag.preview->tile.cells != original->cells ||
+                    drag.preview->tile.location != original->location ||
+                    drag.preview->tile.wantedWidth != original->wantedWidth ||
+                    drag.preview->tile.wantedHeight != original->wantedHeight) &&
+                    next.Move(*drag.preview)) {
                     auto& layout = Layout::GetSingleton();
                     layout.Commit(std::move(next));
                     if (drag.blocked) {
@@ -1110,8 +1113,8 @@ namespace TFM::UI
                 }
                 if (drag.blocked) {
                     gridEditor.feedback = drag.resize ? "Resize blocked by a tile, grid edge, or region boundary." :
-                        (drag.target.IsValid() ? "No free rectangle for that size in the target region." :
-                            "Drop blocked by a tile, grid edge, or region boundary.");
+                        (drag.targetEdge ? "There is no room for the copied size on that side." :
+                            "No legal placement for this drop.");
                 }
             } else if (!gridEditor.editing && pointerOverGrid && Contains(drag.sourceRect, mouse)) {
                 Activate(Favorites::GetSingleton().Find(drag.source), drag.resize ? Actions::Hand::kLeft : Actions::Hand::kRight);
@@ -1125,16 +1128,26 @@ namespace TFM::UI
                 return;
             }
             const auto color = dragState.blocked ? IM_COL32(244, 123, 94, 255) : IM_COL32(93, 227, 199, 255);
-            const auto bounds = dragState.preview ? geometry.RectFor(dragState.preview->cells) : dragState.sourceRect;
+            const auto bounds = dragState.preview ? geometry.RectFor(dragState.preview->tile.cells) : dragState.sourceRect;
             ImGui::ImDrawListManager::AddRect(drawList, Min(bounds), Max(bounds), color, 1, 0, 3);
+            if (dragState.preview && dragState.preview->displaced && !dragState.preview->overflow) {
+                const auto& displaced = *dragState.preview->displaced;
+                if (displaced.location.global || displaced.location == gridEditor.current) {
+                    const auto destination = geometry.RectFor(displaced.cells);
+                    ImGui::ImDrawListManager::AddRect(drawList, Min(destination), Max(destination),
+                        IM_COL32(245, 199, 112, 255), 1, 0, 3);
+                }
+            }
             if (dragState.preview) {
-                const auto c = dragState.preview->cells;
-                ImGui::SetTooltip("%s%d x %d", dragState.blocked ? "Limit: " :
-                    (dragState.target.IsValid() && dragState.edgeHeld >= 0.30f ? "Copy size: " : ""), c.w, c.h);
-            } else if (dragState.target.IsValid() && dragState.edgeHeld < 0.30f) {
-                ImGui::SetTooltip("Hold to copy tile size");
+                const auto c = dragState.preview->tile.cells;
+                if (dragState.preview->overflow) {
+                    ImGui::SetTooltip("Covered tile will be routed to another page");
+                } else {
+                    ImGui::SetTooltip("%s%d x %d", dragState.blocked ? "Limit: " :
+                        (dragState.targetEdge ? "Drop alongside at " : ""), c.w, c.h);
+                }
             } else if (dragState.blocked) {
-                ImGui::SetTooltip("No legal placement at the pointer");
+                ImGui::SetTooltip("%s", dragState.targetEdge ? "No room on that side" : "No legal placement at the pointer");
             }
         }
 
@@ -1400,9 +1413,15 @@ namespace TFM::UI
             auto display = gridEditor.Draft(live);
             gridEditor.ClampPage(display);
             if (const auto turn = pendingPageTurn.exchange(0, std::memory_order_acq_rel); turn != 0) {
-                dragState = {};
+                const auto page = gridEditor.current;
+                if (dragState.resize) {
+                    dragState = {};
+                }
                 paintSelection.reset();
                 gridEditor.Turn(display, turn);
+                if (dragState.source.IsValid() && gridEditor.current != page) {
+                    dragState.active = true;
+                }
             }
             const auto geometry = gridEditor.Geometry(display, screen);
             const auto bounds = geometry.window;
@@ -1431,9 +1450,14 @@ namespace TFM::UI
             }
             if (settings.previewMode == Config::PreviewMode::kMeshes) {
                 std::vector<FavoriteItem> visibleFavorites;
-                visibleFavorites.reserve(leaves.size());
+                visibleFavorites.reserve(leaves.size() + 1);
                 for (const auto& leaf : leaves) {
                     if (const auto* item = Favorites::GetSingleton().Find(leaf.item)) {
+                        visibleFavorites.push_back(*item);
+                    }
+                }
+                if (dragState.active && !dragState.resize && !FindLeaf(leaves, dragState.source)) {
+                    if (const auto* item = Favorites::GetSingleton().Find(dragState.source)) {
                         visibleFavorites.push_back(*item);
                     }
                 }
