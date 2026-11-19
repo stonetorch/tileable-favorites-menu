@@ -19,7 +19,7 @@ namespace TFM::SettingsMenu
                 "Mode 1 (Q / E to switch pages)",
                 "Mode 2 (A / D to switch pages, Q to close)"
             };
-            auto controlMode = Config::GetControlMode() == Config::ControlMode::kQE ? 0 : 1;
+            auto controlMode = Config::Get().controlMode == Config::ControlMode::kQE ? 0 : 1;
             if (ImGuiMCP::Combo(
                     "Control mode",
                     std::addressof(controlMode),

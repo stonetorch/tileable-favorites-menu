@@ -1,6 +1,9 @@
 #include "GridEditor.h"
 
 #include "Config.h"
+#include "Favorites.h"
+
+#include <tuple>
 #include "Theme.h"
 
 namespace TFM::UI
@@ -56,13 +59,13 @@ namespace TFM::UI
             return std::min(width, std::max(1.0f, screenWidth - 1.0f));
         }
 
-        bool NavigationButton(const char* label, bool selected)
+        bool NavigationButton(const char* label, bool selected, ImVec2 size = {})
         {
             if (selected) {
                 ImGui::PushStyleColor(ImGuiCol_Text, Theme::kFocusColor);
                 ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(238, 232, 214, 42));
             }
-            const auto pressed = ImGui::Button(label);
+            const auto pressed = ImGui::Button(label, size);
             if (selected) {
                 ImGui::PopStyleColor(2);
             }
@@ -299,7 +302,7 @@ namespace TFM::UI
             std::clamp(y, 0.0f, std::max(0.0f, screen.y - height)), width, height};
         ImGui::SetNextWindowPos({navigationRect_.x, navigationRect_.y}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({width, height}, ImGuiCond_Always);
-        const auto backdropAlpha = Config::Get().backdropAlpha;
+        groupIcons_.clear();
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Theme::kCornerRadius);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
@@ -309,7 +312,7 @@ namespace TFM::UI
         ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(236, 236, 236, 26));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(236, 236, 236, 48));
-        ImGui::SetNextWindowBgAlpha(backdropAlpha);
+        ImGui::SetNextWindowBgAlpha(0.0f);
         if (ImGui::Begin("##TFME navigation", nullptr, kOverlayFlags | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBringToFrontOnFocus)) {
             if (ImGui::Button("<##Previous")) {
                 Turn(grid, -1);
@@ -355,31 +358,73 @@ namespace TFM::UI
                 }
             }
             if (ImGui::BeginChild("##Pages", {0, 0}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
+                std::array<const Placement*, kGroupLimit> firstItems{};
+                const auto order = [](const Placement& tile) {
+                    return std::tuple{tile.location.page, tile.cells.y, tile.cells.x};
+                };
+                const auto& favorites = Favorites::GetSingleton();
+                for (const auto& tile : grid.tiles) {
+                    const auto& location = tile.location;
+                    if (location.global || location.group >= grid.groups.size() ||
+                        location.page >= grid.groups[location.group].pages.size() ||
+                        !grid.Inside(tile.cells) || !favorites.Find(tile.Key())) {
+                        continue;
+                    }
+                    auto& first = firstItems[location.group];
+                    if (!first || order(tile) < order(*first)) {
+                        first = &tile;
+                    }
+                }
+
+                const auto drawList = ImGui::GetWindowDrawList();
+                const auto clipMin = ImDrawListManager::GetClipRectMin(drawList);
+                const auto clipMax = ImDrawListManager::GetClipRectMax(drawList);
+                const auto buttonSize = ImGui::GetFrameHeight();
                 for (unsigned g = 0; g < grid.groups.size(); ++g) {
                     const auto& group = grid.groups[g];
                     ImGui::PushID(static_cast<int>(g));
                     if (!vertical && g != 0) {
                         ImGui::SameLine(0, 16);
                     }
-                    const auto& icon = group.icon.empty() ? group.name : group.icon;
-                    if (NavigationButton(icon.c_str(), current.group == g)) {
-                        current = {g, 0, false};
+                    const auto key = firstItems[g] ? firstItems[g]->Key() : ItemKey{};
+                    const auto pos = ImGui::GetCursorScreenPos();
+                    const auto& fallback = group.icon.empty() ? group.name : group.icon;
+                    const auto homeWidth = std::max(buttonSize, ImGui::CalcTextSize(fallback.c_str()).x +
+                        ImGui::GetStyle()->FramePadding.x * 2.0f);
+                    const Rect iconBounds{pos.x + (homeWidth - buttonSize) * 0.5f, pos.y, buttonSize, buttonSize};
+                    const bool showIcon = key.IsValid() && iconBounds.x >= clipMin.x && pos.y >= clipMin.y &&
+                        iconBounds.Right() <= clipMax.x && iconBounds.Bottom() <= clipMax.y;
+                    if (showIcon) {
+                        groupIcons_.push_back({g, key, iconBounds});
+                    }
+                    const auto label = showIcon && IconLayer::IsGroupIconReady(g, key) ?
+                        std::string("###FirstPage") : fallback + "###FirstPage";
+                    const auto home = Location{g, 0, false};
+                    if (NavigationButton(label.c_str(), current == home, {homeWidth, buttonSize})) {
+                        current = home;
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("%s", group.name.c_str());
+                        ImGui::SetTooltip("%s / 1", group.name.c_str());
                     }
-                    // Keep the strip bounded while retaining exact navigation via the page selector.
+
                     const auto index = current.group == g ? current.page : 0U;
                     const auto size = static_cast<unsigned>(group.pages.size());
                     const unsigned visible = vertical ? 3 : 5;
-                    const auto half = visible / 2;
-                    const auto start = std::min(index > half ? index - half : 0U, size > visible ? size - visible : 0U);
-                    for (unsigned p = start; p < std::min(size, start + visible); ++p) {
+                    const auto start = std::clamp(index > 1 ? index - 1 : 1U, 1U,
+                        size > visible ? size - visible + 1 : 1U);
+                    for (unsigned p = start; p < std::min(size, start + visible - 1); ++p) {
                         ImGui::SameLine(0, 3);
                         ImGui::PushID(static_cast<int>(p));
-                        const auto label = std::to_string(p + 1);
-                        if (NavigationButton(label.c_str(), current == Location{g, p, false})) {
-                            current = {g, p, false};
+                        const auto page = Location{g, p, false};
+                        if (NavigationButton("##Page", current == page, {buttonSize * 0.65f, buttonSize})) {
+                            current = page;
+                        }
+                        if (ImGui::IsItemVisible()) {
+                            const auto min = ImGui::GetItemRectMin();
+                            const auto max = ImGui::GetItemRectMax();
+                            ImDrawListManager::AddCircleFilled(drawList,
+                                {(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f},
+                                buttonSize * 0.12f, current == page ? Theme::kFocusColor : Theme::kTextColor, 0);
                         }
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("%s / %u", group.name.c_str(), p + 1);
@@ -487,7 +532,7 @@ namespace TFM::UI
             bool dirty = false;
             std::optional<Location> organize;
             bool wholeGroup = false;
-            const auto pageKeys = Config::GetControlMode() == Config::ControlMode::kAD ? "A or D" : "Q or E";
+            const auto pageKeys = Config::Get().controlMode == Config::ControlMode::kAD ? "A or D" : "Q or E";
             ImGui::TextWrapped("Press %s while dragging a tile to change pages. Right-drag to grow. Shift + right-drag to shrink. Drop along one edge to copy the size and place the tile alongside.", pageKeys);
             if (regionMode) {
                 ImGui::TextWrapped("Click a cell or drag a rectangle to switch regions. Teal cells stay visible on every page.");

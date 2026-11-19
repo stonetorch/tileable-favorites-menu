@@ -6,7 +6,8 @@ namespace TFM::Config
     namespace
     {
         Settings settings;
-        std::atomic<ControlMode> controlMode{ ControlMode::kQE };
+        // The input callback can read the mode independently of the settings panel.
+        std::atomic<ControlMode> inputControlMode{ ControlMode::kQE };
         constexpr auto kPath = L"Data\\SKSE\\Plugins\\TileableFavoritesMenu.ini";
 
         [[nodiscard]] bool ReadBool(const wchar_t* section, const wchar_t* key, bool fallback)
@@ -18,6 +19,32 @@ namespace TFM::Config
         {
             const auto value = GetPrivateProfileIntW(section, key, static_cast<int>(fallback), kPath);
             return value < 0 ? fallback : static_cast<std::uint32_t>(value);
+        }
+
+        [[nodiscard]] ControlMode ReadControlMode(ControlMode fallback)
+        {
+            std::array<wchar_t, 64> value{};
+            const auto fallbackString = fallback == ControlMode::kAD ? L"AD" : L"QE";
+            GetPrivateProfileStringW(
+                L"General",
+                L"ControlMode",
+                fallbackString,
+                value.data(),
+                static_cast<DWORD>(value.size()),
+                kPath);
+
+            std::wstring normalized(value.data());
+            std::ranges::transform(normalized, normalized.begin(), [](wchar_t character) {
+                return static_cast<wchar_t>(std::towlower(character));
+            });
+            if (normalized == L"qe" || normalized == L"1") {
+                return ControlMode::kQE;
+            }
+            if (normalized == L"ad" || normalized == L"2") {
+                return ControlMode::kAD;
+            }
+            logger::warn("Unknown ControlMode value; using {}", fallback == ControlMode::kAD ? "AD" : "QE");
+            return fallback;
         }
 
         [[nodiscard]] PreviewMode ReadPreviewMode(PreviewMode fallback)
@@ -116,11 +143,11 @@ namespace TFM::Config
 
     void Load()
     {
-        const auto mode = ReadUInt(L"General", L"ControlMode", 1);
-        controlMode.store(mode == 2 ? ControlMode::kAD : ControlMode::kQE);
         settings.pauseGameWhileOpen =
             ReadBool(L"General", L"PauseGameWhileOpen", settings.pauseGameWhileOpen);
         settings.closeOnSelection = ReadBool(L"General", L"CloseOnSelection", settings.closeOnSelection);
+        settings.controlMode = ReadControlMode(settings.controlMode);
+        inputControlMode.store(settings.controlMode, std::memory_order_release);
         settings.previewMode = ReadPreviewMode(settings.previewMode);
         settings.tileStyle = ReadTileStyle(settings.tileStyle);
         settings.previewResolution = std::clamp(
@@ -154,9 +181,10 @@ namespace TFM::Config
             kTextSizeMax);
 
         logger::info(
-            "Settings loaded (pauseGameWhileOpen={}, closeOnSelection={}, previewMode={}, tileStyle={}, meshPreview={}px, borderScale={:.2f}, frameScale={:.2f}, textSize={}px)",
+            "Settings loaded (pauseGameWhileOpen={}, closeOnSelection={}, controlMode={}, previewMode={}, tileStyle={}, meshPreview={}px, borderScale={:.2f}, frameScale={:.2f}, textSize={}px)",
             settings.pauseGameWhileOpen,
             settings.closeOnSelection,
+            settings.controlMode == ControlMode::kAD ? "AD" : "QE",
             settings.previewMode == PreviewMode::kIcons ? "Icons" : "Meshes",
             settings.tileStyle == TileStyle::kMinimal ? "Minimal" : "Framed",
             settings.previewResolution,
@@ -165,16 +193,21 @@ namespace TFM::Config
             settings.textSize);
     }
 
-    ControlMode GetControlMode()
+    ControlMode GetInputControlMode()
     {
-        return controlMode.load();
+        return inputControlMode.load(std::memory_order_acquire);
     }
 
     void SetControlMode(ControlMode mode)
     {
-        if (controlMode.exchange(mode) != mode) {
-            PersistValue(L"General", L"ControlMode", mode == ControlMode::kAD ? L"2" : L"1", "ControlMode");
+        if (settings.controlMode == mode) {
+            return;
         }
+
+        settings.controlMode = mode;
+        inputControlMode.store(mode, std::memory_order_release);
+        const auto value = mode == ControlMode::kAD ? L"AD" : L"QE";
+        PersistValue(L"General", L"ControlMode", value, "ControlMode");
     }
 
     void SetPauseGameWhileOpen(bool enabled)
@@ -321,11 +354,11 @@ namespace TFM::Config
     void ResetToDefaults()
     {
         settings = Settings{};
-        controlMode.store(ControlMode::kQE);
+        inputControlMode.store(settings.controlMode, std::memory_order_release);
 
-        PersistValue(L"General", L"ControlMode", L"1", "ControlMode");
         PersistValue(L"General", L"PauseGameWhileOpen", L"1", "PauseGameWhileOpen");
         PersistValue(L"General", L"CloseOnSelection", L"0", "CloseOnSelection");
+        PersistValue(L"General", L"ControlMode", L"QE", "ControlMode");
         PersistValue(L"Rendering", L"PreviewMode", L"Icons", "PreviewMode");
         const auto previewResolution = std::format(L"{}", settings.previewResolution);
         PersistValue(

@@ -37,14 +37,15 @@ namespace TFM::Config
 
     enum class ControlMode : std::uint8_t
     {
-        kQE = 1,
-        kAD = 2
+        kQE,
+        kAD
     };
 
     struct Settings
     {
         bool pauseGameWhileOpen{ true };
         bool closeOnSelection{ false };
+        ControlMode controlMode{ ControlMode::kQE };
         PreviewMode previewMode{ PreviewMode::kIcons };
         TileStyle tileStyle{ TileStyle::kFramed };
         std::uint32_t previewResolution{ kPreviewResolutionDefault };
@@ -59,7 +60,7 @@ namespace TFM::Config
 
     [[nodiscard]] const Settings& Get();
     void Load();
-    [[nodiscard]] ControlMode GetControlMode();
+    [[nodiscard]] ControlMode GetInputControlMode();
     void SetControlMode(ControlMode mode);
     void SetPauseGameWhileOpen(bool enabled);
     void SetCloseOnSelection(bool enabled);

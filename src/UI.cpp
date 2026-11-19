@@ -793,7 +793,9 @@ namespace TFM::UI
             const ImGui::ImVec2& screen,
             Rect panel,
             const RenderScene& scene,
-            const Config::Settings& settings)
+            const Config::Settings& settings,
+            Rect navigation = {},
+            std::span<const IconLayer::GroupIcon> groupIcons = {})
         {
             std::optional<IconLayer::DragGhost> dragGhost;
             if (scene.ghost) {
@@ -830,7 +832,9 @@ namespace TFM::UI
                 settings.tileAlpha,
                 settings.tileStyle == Config::TileStyle::kFramed,
                 settings.borderScale,
-                settings.frameScale);
+                settings.frameScale,
+                navigation,
+                groupIcons);
         }
 
         void DrawCachedPreview(
@@ -1431,7 +1435,6 @@ namespace TFM::UI
             }
             inputHotkeyTarget.store(gridEditor.editing ? 0 : PackItemKey(HotkeyTarget(leaves)), std::memory_order_release);
 
-            bool layoutSubmitted = false;
             std::optional<RenderScene> renderScene;
             auto presentationState = IconLayer::GetPresentationState();
             if (presentationState == IconLayer::PresentationState::kFailed) {
@@ -1441,7 +1444,6 @@ namespace TFM::UI
             if (presentationState != IconLayer::PresentationState::kReady) {
                 renderScene = BuildRenderScene(leaves, false, controllerInputActive);
                 SubmitScaleformLayout(screen, bounds, *renderScene, settings);
-                layoutSubmitted = true;
                 presentationState = IconLayer::GetPresentationState();
                 if (presentationState == IconLayer::PresentationState::kFailed) {
                     RestoreVanillaAfterPresentationFailure();
@@ -1504,9 +1506,6 @@ namespace TFM::UI
                         const bool trackHover = !controllerInputActive && pointerOverGrid;
                         renderScene = BuildRenderScene(leaves, trackHover, controllerInputActive);
                     }
-                    if (!layoutSubmitted) {
-                        SubmitScaleformLayout(screen, bounds, *renderScene, settings);
-                    }
                     if (renderScene->tiles.empty()) {
                         DrawEmpty(drawList, bounds);
                     } else {
@@ -1539,6 +1538,10 @@ namespace TFM::UI
                 const auto page = gridEditor.current;
                 const auto wasPainting = gridEditor.regionMode;
                 gridEditor.DrawControls(live, geometry, focusedItem);
+                if (renderScene) {
+                    SubmitScaleformLayout(screen, bounds, *renderScene, settings,
+                        gridEditor.NavigationRect(), gridEditor.GroupIcons());
+                }
                 if (gridEditor.current != page || gridEditor.regionMode != wasPainting) {
                     dragState = {};
                     paintSelection.reset();
@@ -1589,7 +1592,7 @@ namespace TFM::UI
                 if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
                     using Key = RE::BSKeyboardDevice::Key;
                     const auto key = static_cast<Key>(button->GetIDCode());
-                    const auto useAD = Config::GetControlMode() == Config::ControlMode::kAD;
+                    const auto useAD = Config::GetInputControlMode() == Config::ControlMode::kAD;
                     const auto previous = useAD ? Key::kA : Key::kQ;
                     const auto next = useAD ? Key::kD : Key::kE;
                     if (key == previous || key == next || key == Key::kQ) {
