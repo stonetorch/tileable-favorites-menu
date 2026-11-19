@@ -407,12 +407,7 @@ namespace TFM::UI
                         ImGui::SetTooltip("%s / 1", group.name.c_str());
                     }
 
-                    const auto index = current.group == g ? current.page : 0U;
-                    const auto size = static_cast<unsigned>(group.pages.size());
-                    const unsigned visible = vertical ? 3 : 5;
-                    const auto start = std::clamp(index > 1 ? index - 1 : 1U, 1U,
-                        size > visible ? size - visible + 1 : 1U);
-                    for (unsigned p = start; p < std::min(size, start + visible - 1); ++p) {
+                    for (unsigned p = 1; p < group.pages.size(); ++p) {
                         ImGui::SameLine(0, 3);
                         ImGui::PushID(static_cast<int>(p));
                         const auto page = Location{g, p, false};
@@ -430,19 +425,6 @@ namespace TFM::UI
                             ImGui::SetTooltip("%s / %u", group.name.c_str(), p + 1);
                         }
                         ImGui::PopID();
-                    }
-                    if (size > visible) {
-                        ImGui::SameLine(0, 3);
-                        if (ImGui::SmallButton("...")) {
-                            ImGui::OpenPopup("Pages");
-                        }
-                        if (ImGui::BeginPopup("Pages")) {
-                            int page = static_cast<int>(index) + 1;
-                            if (Slider("Page", page, 1, static_cast<int>(size))) {
-                                current = {g, static_cast<unsigned>(page - 1), false};
-                            }
-                            ImGui::EndPopup();
-                        }
                     }
                     ImGui::PopID();
                 }

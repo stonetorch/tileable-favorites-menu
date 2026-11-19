@@ -1,5 +1,7 @@
 #include "IconLayer.h"
 
+#include "Grid.h"
+
 #include "Theme.h"
 #include "logger.h"
 
@@ -71,6 +73,8 @@ namespace TFM::IconLayer
             bool useFrames{ false };
             float borderScale{ 1.0f };
             float frameScale{ 1.0f };
+            Rect navigation{};
+            std::vector<GroupIcon> groupIcons;
             std::vector<Tile> tiles;
             std::optional<DragGhost> dragGhost;
 
@@ -98,6 +102,7 @@ namespace TFM::IconLayer
             std::unordered_map<ItemKey, Descriptor, ItemKeyHash> descriptors;
             std::unordered_set<ItemKey, ItemKeyHash> loaded;
             std::unordered_set<ItemKey, ItemKeyHash> failed;
+            std::array<ItemKey, kGroupLimit> readyGroupIcons{};
             LayoutSnapshot layout;
             std::uint64_t descriptorRevision{ 1 };
             std::uint64_t layoutRevision{ 1 };
@@ -445,7 +450,7 @@ namespace TFM::IconLayer
             {
                 auto& state = State();
                 std::scoped_lock lock(state.mutex);
-                active = state.active && state.iconsEnabled;
+                active = state.active;
                 if (active && state.items.empty() &&
                     (state.probeRequested || state.probeOpening || !state.descriptors.empty() || state.phase != "ready")) {
                     state.descriptors.clear();
@@ -555,7 +560,13 @@ namespace TFM::IconLayer
                 RE::GFxValue color;
                 params.thisPtr->GetMember("iconColor", std::addressof(color));
                 ApplyColor(icon, color.IsNumber() ? static_cast<std::uint32_t>(color.GetNumber()) : 0xFFFFFF);
-                ReportLoaded(KeyFromListener(*params.thisPtr));
+                RE::GFxValue groupIcon;
+                params.thisPtr->GetMember("groupIcon", std::addressof(groupIcon));
+                if (groupIcon.IsBool() && groupIcon.GetBool()) {
+                    params.thisPtr->SetMember("loaded", true);
+                } else {
+                    ReportLoaded(KeyFromListener(*params.thisPtr));
+                }
             }
         };
 
@@ -573,7 +584,11 @@ namespace TFM::IconLayer
                 }
                 const auto key = KeyFromListener(*params.thisPtr);
                 logger::warn("{} for {:08X}", reason, key.formID);
-                ReportFailed(key, std::move(reason));
+                RE::GFxValue groupIcon;
+                params.thisPtr->GetMember("groupIcon", std::addressof(groupIcon));
+                if (!groupIcon.IsBool() || !groupIcon.GetBool()) {
+                    ReportFailed(key, std::move(reason));
+                }
             }
         };
 
@@ -1030,6 +1045,7 @@ namespace TFM::IconLayer
                     }
                     layoutRevision_ = snapshot.layoutRevision;
                 }
+                SynchronizeGroupIcons(snapshot);
                 const bool framesReady = SynchronizeFrames(snapshot.layout, layoutChanged);
                 const bool equipIconsReady = SynchronizeEquipIcons(snapshot.layout, layoutChanged);
                 const bool sceneReady = framesReady && equipIconsReady;
@@ -1046,6 +1062,12 @@ namespace TFM::IconLayer
                     }
                 }
                 slots_.clear();
+                for (auto& slot : groupSlots_) {
+                    if (slot.clip.IsDisplayObject()) {
+                        slot.clip.Invoke("removeMovieClip");
+                    }
+                    slot = {};
+                }
             }
 
             void ClearEquipIcons()
@@ -1084,47 +1106,105 @@ namespace TFM::IconLayer
                         continue;
                     }
 
-                    IconSlot slot;
-                    slot.key = key;
-                    const auto clipName = std::format("tfmIcon{}", slotIndex);
-                    std::array clipArgs{
-                        RE::GFxValue(clipName.c_str()),
-                        RE::GFxValue(static_cast<double>(1000U + slotIndex))
-                    };
-                    root_.Invoke("createEmptyMovieClip", std::addressof(slot.clip), clipArgs);
-                    if (!slot.clip.IsDisplayObject()) {
+                    auto slot = LoadIcon(key, descriptor->second, 1000U + slotIndex++, false);
+                    if (slot.clip.IsDisplayObject()) {
+                        slots_.push_back(std::move(slot));
+                    }
+                }
+            }
+
+            IconSlot LoadIcon(ItemKey key, const Descriptor& descriptor, unsigned depth, bool groupIcon)
+            {
+                IconSlot slot;
+                slot.key = key;
+                const auto clipName = std::format("tfmIcon{}", depth);
+                std::array clipArgs{RE::GFxValue(clipName.c_str()), RE::GFxValue(static_cast<double>(depth))};
+                root_.Invoke("createEmptyMovieClip", std::addressof(slot.clip), clipArgs);
+                if (!slot.clip.IsDisplayObject()) {
+                    if (!groupIcon) {
                         ReportFailed(key, "Could not create an icon MovieClip");
-                        ++slotIndex;
-                        continue;
                     }
-                    slot.clip.SetMember("_visible", false);
+                    return slot;
+                }
+                slot.clip.SetMember("_visible", false);
 
-                    uiMovie->CreateObject(std::addressof(slot.listener));
-                    slot.listener.SetMember("formID", static_cast<double>(key.formID));
-                    slot.listener.SetMember("uniqueID", static_cast<double>(key.uniqueID));
-                    slot.listener.SetMember("iconLabel", descriptor->second.label.c_str());
-                    slot.listener.SetMember("iconColor", static_cast<double>(descriptor->second.color));
+                uiMovie->CreateObject(std::addressof(slot.listener));
+                slot.listener.SetMember("formID", static_cast<double>(key.formID));
+                slot.listener.SetMember("uniqueID", static_cast<double>(key.uniqueID));
+                slot.listener.SetMember("groupIcon", groupIcon);
+                slot.listener.SetMember("iconLabel", descriptor.label.c_str());
+                slot.listener.SetMember("iconColor", static_cast<double>(descriptor.color));
 
-                    RE::GFxValue initFunction;
-                    uiMovie->CreateFunction(std::addressof(initFunction), loadInitHandler_.get());
-                    slot.listener.SetMember("onLoadInit", initFunction);
-                    RE::GFxValue errorFunction;
-                    uiMovie->CreateFunction(std::addressof(errorFunction), loadErrorHandler_.get());
-                    slot.listener.SetMember("onLoadError", errorFunction);
+                RE::GFxValue initFunction;
+                uiMovie->CreateFunction(std::addressof(initFunction), loadInitHandler_.get());
+                slot.listener.SetMember("onLoadInit", initFunction);
+                RE::GFxValue errorFunction;
+                uiMovie->CreateFunction(std::addressof(errorFunction), loadErrorHandler_.get());
+                slot.listener.SetMember("onLoadError", errorFunction);
 
-                    uiMovie->CreateObject(std::addressof(slot.loader), "MovieClipLoader");
-                    if (!slot.loader.IsObject()) {
+                uiMovie->CreateObject(std::addressof(slot.loader), "MovieClipLoader");
+                if (!slot.loader.IsObject()) {
+                    if (!groupIcon) {
                         ReportFailed(key, "Could not create MovieClipLoader");
-                        slot.clip.Invoke("removeMovieClip");
-                        ++slotIndex;
+                    }
+                    slot.clip.Invoke("removeMovieClip");
+                    slot.clip = RE::GFxValue{};
+                    return slot;
+                }
+                std::array listenerArgs{slot.listener};
+                slot.loader.Invoke("addListener", listenerArgs);
+                std::array loadArgs{RE::GFxValue(descriptor.source.c_str()), slot.clip};
+                slot.loader.Invoke("loadClip", loadArgs);
+                return slot;
+            }
+
+            void SynchronizeGroupIcons(const MenuSnapshot& snapshot)
+            {
+                std::array<ItemKey, kGroupLimit> ready{};
+                const auto visible = uiMovie->GetVisibleFrameRect();
+                for (unsigned group = 0; group < groupSlots_.size(); ++group) {
+                    auto& slot = groupSlots_[group];
+                    const auto icon = std::ranges::find(snapshot.layout.groupIcons, group, &GroupIcon::group);
+                    if (icon == snapshot.layout.groupIcons.end()) {
+                        if (slot.clip.IsDisplayObject()) {
+                            slot.clip.SetMember("_visible", false);
+                        }
                         continue;
                     }
-                    std::array listenerArgs{ slot.listener };
-                    slot.loader.Invoke("addListener", listenerArgs);
-                    std::array loadArgs{ RE::GFxValue(descriptor->second.source.c_str()), slot.clip };
-                    slot.loader.Invoke("loadClip", loadArgs);
-                    slots_.push_back(std::move(slot));
-                    ++slotIndex;
+                    const auto descriptor = snapshot.descriptors.find(icon->key);
+                    if (descriptor == snapshot.descriptors.end()) {
+                        if (slot.clip.IsDisplayObject()) {
+                            slot.clip.SetMember("_visible", false);
+                        }
+                        continue;
+                    }
+                    if (slot.key != icon->key) {
+                        if (slot.clip.IsDisplayObject()) {
+                            slot.clip.Invoke("removeMovieClip");
+                        }
+                        slot = LoadIcon(icon->key, descriptor->second, 900U + group, true);
+                    }
+                    RE::GFxValue loaded;
+                    if (!slot.clip.IsDisplayObject() || !slot.listener.GetMember("loaded", std::addressof(loaded)) ||
+                        !loaded.IsBool() || !loaded.GetBool()) {
+                        continue;
+                    }
+
+                    const auto bounds = ToStageRect(icon->bounds, snapshot.layout, visible);
+                    const auto size = std::min(bounds.width, bounds.height) * 0.8f;
+                    RE::GFxValue::DisplayInfo display;
+                    display.SetPosition(bounds.CenterX() - size * 0.5f, bounds.CenterY() - size * 0.5f);
+                    const auto scale = size / kIconLibrarySize * 100.0f;
+                    display.SetScale(scale, scale);
+                    display.SetVisible(true);
+                    slot.clip.SetDisplayInfo(display);
+                    ready[group] = icon->key;
+                }
+
+                auto& state = State();
+                std::scoped_lock lock(state.mutex);
+                if (state.descriptorRevision == snapshot.descriptorRevision) {
+                    state.readyGroupIcons = ready;
                 }
             }
 
@@ -1154,6 +1234,14 @@ namespace TFM::IconLayer
                     Theme::kBackdropColor,
                     std::clamp(layout.backdropAlpha, 0.0f, 1.0f) * 100.0f);
 
+                if (layout.navigation.width > 0.0f && layout.navigation.height > 0.0f) {
+                    DrawRoundRect(
+                        background_,
+                        ToStageRect(layout.navigation, layout, visible),
+                        Theme::kCornerRadius,
+                        Theme::kBackdropColor,
+                        std::clamp(layout.backdropAlpha, 0.0f, 1.0f) * 100.0f);
+                }
                 if (!layout.useFrames) {
                     for (const auto& tile : layout.tiles) {
                         DrawRoundRect(
@@ -1506,6 +1594,7 @@ namespace TFM::IconLayer
             RE::GPtr<EquipLoadInitHandler> equipLoadInitHandler_;
             RE::GPtr<EquipLoadErrorHandler> equipLoadErrorHandler_;
             std::vector<IconSlot> slots_;
+            std::array<IconSlot, kGroupLimit> groupSlots_;
             std::vector<FrameSlot> frameSlots_;
             std::vector<EquipSlot> equipSlots_;
         };
@@ -1552,20 +1641,16 @@ namespace TFM::IconLayer
             if (active && (!wasActive || modeChanged)) {
                 state.loaded.clear();
                 state.failed.clear();
+                state.readyGroupIcons = {};
                 state.presentationReady = false;
                 ++state.descriptorRevision;
-                if (state.iconsEnabled) {
-                    state.phase = state.descriptors.empty() ? "waiting" : "ready";
-                    state.probeRequested = !state.items.empty() && !HasEveryDescriptor(state);
-                } else {
-                    state.probeRequested = false;
-                    state.phase = "ready";
-                }
+                state.phase = state.descriptors.empty() ? "waiting" : "ready";
+                state.probeRequested = !state.items.empty() && !HasEveryDescriptor(state);
             } else if (!active) {
                 state.presentationReady = false;
                 state.probeRequested = false;
             }
-            cancelProbe = !state.active || !state.iconsEnabled;
+            cancelProbe = !state.active;
             updateHost = state.registered;
         }
 
@@ -1597,6 +1682,7 @@ namespace TFM::IconLayer
         }
         state.items = std::move(keys);
         state.descriptors.clear();
+        state.readyGroupIcons = {};
         state.loaded.clear();
         state.failed.clear();
         state.presentationReady = false;
@@ -1604,10 +1690,17 @@ namespace TFM::IconLayer
         if (state.probeOpening) {
             state.restartProbe = true;
         } else {
-            state.probeRequested = state.active && state.iconsEnabled;
+            state.probeRequested = state.active;
         }
-        state.phase = state.active ? (state.iconsEnabled ? "waiting" : "ready") : "disabled";
+        state.phase = state.active ? "waiting" : "disabled";
         state.error.clear();
+    }
+
+    bool IsGroupIconReady(unsigned group, ItemKey key)
+    {
+        auto& state = State();
+        std::scoped_lock lock(state.mutex);
+        return state.readyGroupIcons[group] == key;
     }
 
     void SubmitLayout(
@@ -1620,7 +1713,9 @@ namespace TFM::IconLayer
         float tileAlpha,
         bool useFrames,
         float borderScale,
-        float frameScale)
+        float frameScale,
+        Rect navigation,
+        std::span<const GroupIcon> groupIcons)
     {
         LayoutSnapshot next;
         next.screenWidth = screenWidth;
@@ -1631,6 +1726,8 @@ namespace TFM::IconLayer
         next.useFrames = useFrames;
         next.borderScale = borderScale;
         next.frameScale = frameScale;
+        next.navigation = navigation;
+        next.groupIcons.assign(groupIcons.begin(), groupIcons.end());
         next.tiles.assign(tiles.begin(), tiles.end());
         next.dragGhost = dragGhost;
 
@@ -1648,7 +1745,7 @@ namespace TFM::IconLayer
         {
             auto& state = State();
             std::scoped_lock lock(state.mutex);
-            if (state.active && state.iconsEnabled) {
+            if (state.active) {
                 isProbe = state.probeOpening;
                 if (!isProbe && state.probeRequested && !state.items.empty()) {
                     state.probeRequested = false;

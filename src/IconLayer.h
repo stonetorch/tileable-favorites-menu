@@ -24,6 +24,15 @@ namespace TFM::IconLayer
         friend bool operator==(const Tile&, const Tile&) = default;
     };
 
+    struct GroupIcon
+    {
+        unsigned group{};
+        ItemKey key{};
+        Rect bounds{};
+
+        friend bool operator==(const GroupIcon&, const GroupIcon&) = default;
+    };
+
     struct DragGhost
     {
         ItemKey key;
@@ -38,6 +47,7 @@ namespace TFM::IconLayer
     bool Register();
     void SetActive(bool active, bool iconsEnabled);
     void Reconcile(const std::vector<FavoriteItem>& items);
+    [[nodiscard]] bool IsGroupIconReady(unsigned group, ItemKey key);
     void SubmitLayout(
         float screenWidth,
         float screenHeight,
@@ -48,7 +58,9 @@ namespace TFM::IconLayer
         float tileAlpha,
         bool useFrames,
         float borderScale,
-        float frameScale);
+        float frameScale,
+        Rect navigation,
+        std::span<const GroupIcon> groupIcons);
     [[nodiscard]] bool HandleFavoritesMenuOpened();
     [[nodiscard]] PresentationState GetPresentationState();
 }
