@@ -42,15 +42,30 @@ namespace TFM::UI
             return ImGui::SliderInt(label, &value, low, high);
         }
 
-        bool DrawPageDot(bool selected)
+        float NavigationHeight(float screenHeight)
         {
-            const auto height = ImGui::GetFrameHeight();
-            const auto pressed = ImGui::Button("##Page", {height * 0.65f, height});
-            const auto min = ImGui::GetItemRectMin();
-            const auto max = ImGui::GetItemRectMax();
-            const ImVec2 center{(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f};
-            const auto color = selected || ImGui::IsItemHovered() ? Theme::kFocusColor : IM_COL32(236, 236, 236, 118);
-            ImDrawListManager::AddCircleFilled(ImGui::GetWindowDrawList(), center, selected ? 3.5f : 2.5f, color, 12);
+            const auto& style = *ImGui::GetStyle();
+            const auto height = 2.0f * (ImGui::GetFrameHeightWithSpacing() + style.WindowPadding.y) +
+                style.ScrollbarSize;
+            return std::min(height, std::max(1.0f, screenHeight - 1.0f));
+        }
+
+        float NavigationWidth(float screenWidth)
+        {
+            const auto width = std::max(180.0f, ImGui::GetFrameHeight() * 10.0f);
+            return std::min(width, std::max(1.0f, screenWidth - 1.0f));
+        }
+
+        bool NavigationButton(const char* label, bool selected)
+        {
+            if (selected) {
+                ImGui::PushStyleColor(ImGuiCol_Text, Theme::kFocusColor);
+                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(238, 232, 214, 42));
+            }
+            const auto pressed = ImGui::Button(label);
+            if (selected) {
+                ImGui::PopStyleColor(2);
+            }
             return pressed;
         }
     }
@@ -76,14 +91,14 @@ namespace TFM::UI
         panel.y = std::clamp(panel.y, 0.0f, std::max(0.0f, screen.y - panel.height));
         const float scale = std::clamp(screen.y / 1080.0f, 0.65f, 4.0f);
         if (s.navigation == Navigation::top || s.navigation == Navigation::bottom) {
-            const auto navHeight = std::min(60.0f, std::max(1.0f, screen.y - 1.0f));
+            const auto navHeight = NavigationHeight(screen.y);
             const auto available = std::max(1.0f, screen.y - navHeight);
             panel.height = std::min(panel.height, available);
             panel.y = s.navigation == Navigation::top ?
                 std::clamp(panel.y, navHeight, screen.y - panel.height) :
                 std::min(panel.y, available - panel.height);
         } else if (s.navigation == Navigation::left || s.navigation == Navigation::right) {
-            const auto navWidth = std::min(136.0f, std::max(1.0f, screen.x - 1.0f));
+            const auto navWidth = NavigationWidth(screen.x);
             const auto available = std::max(1.0f, screen.x - navWidth);
             panel.width = std::min(panel.width, available);
             panel.x = s.navigation == Navigation::left ?
@@ -267,8 +282,10 @@ namespace TFM::UI
         const auto& s = grid.settings;
         const bool vertical = s.navigation == Navigation::left || s.navigation == Navigation::right;
         const auto& panel = geometry.window;
-        const float width = vertical ? 132.0f : std::min(screen.x, std::max(390.0f, panel.width));
-        const float height = vertical ? std::min(screen.y, std::max(220.0f, panel.height)) : 58.0f;
+        const float width = vertical ? NavigationWidth(screen.x) :
+            std::min(screen.x, std::max({390.0f, panel.width, ImGui::GetFrameHeight() * 25.0f}));
+        const float height = vertical ? std::min(screen.y, std::max(220.0f, panel.height)) :
+            NavigationHeight(screen.y);
         float x = panel.x;
         float y = panel.y - height;
         switch (s.navigation) {
@@ -301,6 +318,12 @@ namespace TFM::UI
             if (ImGui::Button(">##Next")) {
                 Turn(grid, 1);
             }
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%u / %zu", current.page + 1, grid.groups[current.group].pages.size());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", grid.groups[current.group].name.c_str());
+            }
             if (!vertical) {
                 ImGui::SameLine();
             }
@@ -321,26 +344,25 @@ namespace TFM::UI
                 if (!vertical) {
                     ImGui::SameLine();
                 }
-                if (ImGui::Button(regionMode ? "Stop painting" : "Paint regions")) {
+                if (NavigationButton("Paint regions", regionMode)) {
                     regionMode = !regionMode;
+                    if (regionMode) {
+                        settingsOpen_ = false;
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Click a cell or drag a rectangle to switch between Page and Global.");
                 }
             }
-            if (ImGui::BeginChild("##Pages", {0, 0}, 0, vertical ? 0 : ImGuiWindowFlags_HorizontalScrollbar)) {
+            if (ImGui::BeginChild("##Pages", {0, 0}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
                 for (unsigned g = 0; g < grid.groups.size(); ++g) {
                     const auto& group = grid.groups[g];
                     ImGui::PushID(static_cast<int>(g));
                     if (!vertical && g != 0) {
                         ImGui::SameLine(0, 16);
                     }
-                    const auto selected = current.group == g;
-                    if (selected) {
-                        ImGui::PushStyleColor(ImGuiCol_Text, Theme::kFocusColor);
-                    }
-                    const auto pressed = ImGui::SmallButton(group.icon.empty() ? group.name.c_str() : group.icon.c_str());
-                    if (selected) {
-                        ImGui::PopStyleColor();
-                    }
-                    if (pressed) {
+                    const auto& icon = group.icon.empty() ? group.name : group.icon;
+                    if (NavigationButton(icon.c_str(), current.group == g)) {
                         current = {g, 0, false};
                     }
                     if (ImGui::IsItemHovered()) {
@@ -355,7 +377,8 @@ namespace TFM::UI
                     for (unsigned p = start; p < std::min(size, start + visible); ++p) {
                         ImGui::SameLine(0, 3);
                         ImGui::PushID(static_cast<int>(p));
-                        if (DrawPageDot(current == Location{g, p, false})) {
+                        const auto label = std::to_string(p + 1);
+                        if (NavigationButton(label.c_str(), current == Location{g, p, false})) {
                             current = {g, p, false};
                         }
                         if (ImGui::IsItemHovered()) {
@@ -393,7 +416,8 @@ namespace TFM::UI
         statusRect_ = {};
         const auto& display = baseline_ ? preview_ : live;
         if (HasDraft() || display.missing || !display.notice.empty() || !feedback.empty()) {
-            const auto yPos = std::clamp(panel.Bottom() + 4, 0.0f, std::max(0.0f, screen.y - 95));
+            const auto statusY = s.navigation == Navigation::bottom ? navigationRect_.y - 95.0f : panel.Bottom() + 4.0f;
+            const auto yPos = std::clamp(statusY, 0.0f, std::max(0.0f, screen.y - 95.0f));
             const auto toastX = settingsOpen_ ? settingsRect_.Right() + 6 : 6;
             ImGui::SetNextWindowPos({std::min(toastX, std::max(0.0f, screen.x - 460)), yPos}, ImGuiCond_Always);
             ImGui::SetNextWindowSize({std::min(screen.x, 450.0f), 0}, ImGuiCond_Always);
@@ -427,7 +451,18 @@ namespace TFM::UI
     void GridEditor::DrawSettings(const Grid& live, ItemKey selected)
     {
         const auto screen = ImGui::GetIO()->DisplaySize;
-        settingsRect_ = {6, 66, std::min(336.0f, screen.x - 12), std::max(1.0f, screen.y - 144)};
+        const auto above = navigationRect_.y - 12.0f;
+        const auto below = screen.y - navigationRect_.Bottom() - 12.0f;
+        const auto left = navigationRect_.x - 12.0f;
+        const auto right = screen.x - navigationRect_.Right() - 12.0f;
+        const auto width = std::clamp(screen.x - 12.0f, 1.0f, 336.0f);
+        if (std::max(left, right) >= width) {
+            const auto x = left >= width ? 6.0f : navigationRect_.Right() + 6.0f;
+            settingsRect_ = {x, 6, width, std::max(1.0f, screen.y - 12.0f)};
+        } else {
+            const auto y = above >= below ? 6.0f : navigationRect_.Bottom() + 6.0f;
+            settingsRect_ = {6, y, width, std::max(1.0f, std::max(above, below))};
+        }
         ImGui::SetNextWindowPos({settingsRect_.x, settingsRect_.y}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({settingsRect_.width, settingsRect_.height}, ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.96f);
@@ -454,7 +489,7 @@ namespace TFM::UI
             bool wholeGroup = false;
             ImGui::TextWrapped("Drag a tile to move. Right-drag to grow. Shift + right-drag to shrink. Hold near a tile edge to copy its size.");
             if (regionMode) {
-                ImGui::TextWrapped("Hold the left button, then drag to toggle each cell in the rectangle. Teal cells stay visible on every page.");
+                ImGui::TextWrapped("Click a cell or drag a rectangle to switch regions. Teal cells stay visible on every page.");
             }
 
             if (ImGui::CollapsingHeader("Grid and window", ImGuiTreeNodeFlags_DefaultOpen)) {

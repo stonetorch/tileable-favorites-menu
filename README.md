@@ -21,7 +21,7 @@ Requires the SKSE and Address Library for your runtime, plus SKSE Menu Framework
 | Right-drag from a tile                                         | Grows from the edges indicated by the drag direction                             |
 | Shift + right-drag                                             | Shrinks from the indicated edges                                                 |
 | Edit, then hold a dragged tile near another tile's inside edge | Previews copying the destination tile's dimensions                               |
-| Edit, then Paint regions                                       | After a short hold, drag a rectangle to toggle each cell between Page and Global |
+| Edit, then Paint regions                                       | Click a cell or drag a rectangle to toggle each selected cell between Page and Global |
 | Apply preview or Cancel preview                                | Commits or discards the proposed changes                                         |
 | Escape during a gesture or edit                                | Cancels the gesture or draft, or exits editing                                   |
 
